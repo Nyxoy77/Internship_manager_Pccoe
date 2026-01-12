@@ -13,6 +13,7 @@ import (
 	"github.com/yourusername/student-internship-manager/internal/database"
 	"github.com/yourusername/student-internship-manager/internal/middleware"
 	"github.com/yourusername/student-internship-manager/internal/service"
+	"github.com/yourusername/student-internship-manager/internal/storage"
 )
 
 func main() {
@@ -46,6 +47,11 @@ func main() {
 
 	// Setup Gin router
 	router := gin.Default()
+	minioClient, err := storage.NewMinioClient()
+	if err != nil {
+		log.Fatalf("Error starting minio client: %v", err)
+	}
+	objectStorageService := service.NewObjectStorageService(db, minioClient)
 
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:8081"},
@@ -65,7 +71,7 @@ func main() {
 	{
 		// Public routes
 		api.POST("/login", authHandler.Login)
-
+		api.POST("/upload", objectStorageService.UploadCertificateHandler)
 		// Protected routes
 		protected := api.Group("")
 		protected.Use(middleware.AuthMiddleware(authService))
