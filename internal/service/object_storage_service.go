@@ -33,7 +33,7 @@ func NewObjectStorageService(
 func (s *ObjectStorageService) UploadCertificateHandler(c *gin.Context) {
 	ctx := context.Background()
 
-	internshipID := 8
+	internshipID := 4
 	prn := "123B1B168"
 	userID := 1
 

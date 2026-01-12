@@ -17,5 +17,53 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
 
+
+  minio:
+    image: minio/minio:latest
+    container_name: internship-minio
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: internship-api
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - minio
+    environment:
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: internship_db
+
+      # JWT
+      JWT_SECRET: dev-secret-change-this
+
+      # Server
+      SERVER_PORT: 8080
+
+      # MinIO
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: internship-certificates
+      MINIO_USE_SSL: "false"
+    ports:
+      - "8080:8080"
+
 volumes:
   pg_data:
+  minio_data:
