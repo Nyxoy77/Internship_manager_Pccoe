@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -86,6 +87,12 @@ func (s *InternshipService) BatchCreateInternships(
 
 	for i, req := range requests {
 		rowNum := i + 1
+
+		// sanitization
+		req.PRN = strings.TrimSpace(req.PRN)
+		req.Organization = strings.TrimSpace(req.Organization)
+		req.Description = strings.TrimSpace(req.Description)
+		req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
 
 		startDate, endDate, err := s.validateAndPrepareInternship(&req)
 		if err != nil {

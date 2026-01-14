@@ -45,14 +45,14 @@ func main() {
 	authService := service.NewAuthService(db, cfg.JWTSecret)
 	internshipService := service.NewInternshipService(db, studentService)
 	analyticsSvc := service.NewAnalyticsService(db)
-
+	adminSvc := service.NewAdminService(db)
 	// Initialize handlers
 	authHandler := client.NewAuthHandler(authService)
 	studentHandler := client.NewStudentHandler(studentService)
 	internshipHandler := client.NewInternshipHandler(internshipService)
 	objectStorageHandler := client.NewCertificateClient(objectStorageService)
 	analyticsHandler := client.NewAnalyticsHandler(analyticsSvc)
-
+	studentAdminHandler := client.NewStudentAdminHandler(adminSvc)
 	// Setup Gin router
 	router := gin.Default()
 
@@ -97,6 +97,8 @@ func main() {
 				adminRoutes.GET("/internships/pending", internshipHandler.GetPendingInternships)
 				adminRoutes.POST("/internship/:id/approve", internshipHandler.ApproveInternship)
 				adminRoutes.POST("/internship/:id/reject", internshipHandler.RejectInternship)
+				adminRoutes.POST("/createStudent", studentAdminHandler.CreateStudent)
+				adminRoutes.POST("/createStudents/upload", studentAdminHandler.BatchUploadStudents)
 			}
 
 			// ✅ Analytics belongs here
