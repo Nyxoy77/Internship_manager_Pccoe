@@ -46,6 +46,7 @@ func main() {
 	internshipService := service.NewInternshipService(db, studentService)
 	analyticsSvc := service.NewAnalyticsService(db)
 	adminSvc := service.NewAdminService(db)
+	userService := service.NewUserService(db)
 	// Initialize handlers
 	authHandler := client.NewAuthHandler(authService)
 	studentHandler := client.NewStudentHandler(studentService)
@@ -53,6 +54,7 @@ func main() {
 	objectStorageHandler := client.NewCertificateClient(objectStorageService)
 	analyticsHandler := client.NewAnalyticsHandler(analyticsSvc)
 	studentAdminHandler := client.NewStudentAdminHandler(adminSvc)
+	userHandler := client.NewUserHandler(userService)
 	// Setup Gin router
 	router := gin.Default()
 
@@ -80,7 +82,7 @@ func main() {
 		{
 			protected.GET("/student/:prn/summary", studentHandler.GetStudentSummary)
 			protected.GET("/students", studentHandler.ListStudents)
-
+			protected.POST("/changePassword", userHandler.ChangePassword)
 			managerRoutes := protected.Group("")
 			managerRoutes.Use(middleware.RequireRole("manager"))
 			{
@@ -99,15 +101,17 @@ func main() {
 				adminRoutes.POST("/internship/:id/reject", internshipHandler.RejectInternship)
 				adminRoutes.POST("/createStudent", studentAdminHandler.CreateStudent)
 				adminRoutes.POST("/createStudents/upload", studentAdminHandler.BatchUploadStudents)
+				adminRoutes.POST("/createUser", userHandler.CreateUser)
+
 			}
 
-			// ✅ Analytics belongs here
 			analytics := protected.Group("/analytics")
 			{
 				analytics.GET("/avg-stipend", analyticsHandler.AvgStipend)
 				analytics.GET("/paid-percentage", analyticsHandler.PaidPercentage)
 				analytics.GET("/mode-distribution", analyticsHandler.ModeDistribution)
 			}
+
 		}
 	}
 
