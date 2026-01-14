@@ -35,23 +35,26 @@ func main() {
 
 	log.Println("Database connection established successfully")
 
-	// Initialize services
-	studentService := service.NewStudentService(db)
-	authService := service.NewAuthService(db, cfg.JWTSecret)
-	internshipService := service.NewInternshipService(db, studentService)
-
-	// Initialize handlers
-	authHandler := client.NewAuthHandler(authService)
-	studentHandler := client.NewStudentHandler(studentService)
-	internshipHandler := client.NewInternshipHandler(internshipService)
-
-	// Setup Gin router
-	router := gin.Default()
 	minioClient, err := storage.NewMinioClient()
 	if err != nil {
 		log.Fatalf("Error starting minio client: %v", err)
 	}
 	objectStorageService := service.NewObjectStorageService(db, minioClient)
+	// Initialize services
+	studentService := service.NewStudentService(db)
+	authService := service.NewAuthService(db, cfg.JWTSecret)
+	internshipService := service.NewInternshipService(db, studentService)
+	analyticsSvc := service.NewAnalyticsService(db)
+
+	// Initialize handlers
+	authHandler := client.NewAuthHandler(authService)
+	studentHandler := client.NewStudentHandler(studentService)
+	internshipHandler := client.NewInternshipHandler(internshipService)
+	objectStorageHandler := client.NewCertificateClient(objectStorageService)
+	analyticsHandler := client.NewAnalyticsHandler(analyticsSvc)
+
+	// Setup Gin router
+	router := gin.Default()
 
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:8081"},
@@ -71,30 +74,37 @@ func main() {
 	{
 		// Public routes
 		api.POST("/login", authHandler.Login)
-		api.POST("/upload", objectStorageService.UploadCertificateHandler)
-		// Protected routes
+
 		protected := api.Group("")
 		protected.Use(middleware.AuthMiddleware(authService))
 		{
-			// Student endpoints (accessible by both admin and manager)
 			protected.GET("/student/:prn/summary", studentHandler.GetStudentSummary)
 			protected.GET("/students", studentHandler.ListStudents)
 
-			// Manager-only endpoints (create internships)
 			managerRoutes := protected.Group("")
 			managerRoutes.Use(middleware.RequireRole("manager"))
 			{
 				managerRoutes.POST("/internship", internshipHandler.CreateInternship)
 				managerRoutes.POST("/internships/upload", internshipHandler.BatchUploadInternships)
+				managerRoutes.POST("/internships/:internshipId/certificate", objectStorageHandler.UploadCertificate)
+				managerRoutes.DELETE("/internships/:internshipId/certificate", objectStorageHandler.RemoveCertificate)
+				managerRoutes.GET("/internships/:internshipId/certificate", objectStorageHandler.DownloadViewCertificate)
 			}
 
-			// Admin-only endpoints (approve/reject internships)
 			adminRoutes := protected.Group("")
 			adminRoutes.Use(middleware.RequireRole("admin"))
 			{
 				adminRoutes.GET("/internships/pending", internshipHandler.GetPendingInternships)
 				adminRoutes.POST("/internship/:id/approve", internshipHandler.ApproveInternship)
 				adminRoutes.POST("/internship/:id/reject", internshipHandler.RejectInternship)
+			}
+
+			// ✅ Analytics belongs here
+			analytics := protected.Group("/analytics")
+			{
+				analytics.GET("/avg-stipend", analyticsHandler.AvgStipend)
+				analytics.GET("/paid-percentage", analyticsHandler.PaidPercentage)
+				analytics.GET("/mode-distribution", analyticsHandler.ModeDistribution)
 			}
 		}
 	}

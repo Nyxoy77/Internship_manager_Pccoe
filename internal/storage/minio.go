@@ -6,7 +6,7 @@ import (
 )
 
 func NewMinioClient() (*minio.Client, error) {
-	return minio.New("minio:9000", &minio.Options{
+	return minio.New("localhost:9000", &minio.Options{
 		Creds: credentials.NewStaticV4(
 			"minioadmin",
 			"minioadmin",

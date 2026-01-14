@@ -2,98 +2,92 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
-	"net/http"
-	"time"
+	"mime/multipart"
+	"regexp"
+	"strings"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/minio/minio-go/v7"
 )
 
 type ObjectStorageService struct {
-	DB          *sqlx.DB
-	MinioClient *minio.Client
-	BucketName  string
+	DB         *sqlx.DB
+	Minio      *minio.Client
+	BucketName string
 }
 
-func NewObjectStorageService(
-	db *sqlx.DB,
-	minioClient *minio.Client,
-) *ObjectStorageService {
+func NewObjectStorageService(db *sqlx.DB, minio *minio.Client) *ObjectStorageService {
 	return &ObjectStorageService{
-		DB:          db,
-		MinioClient: minioClient,
-		BucketName:  "internship-certificates",
+		DB:         db,
+		Minio:      minio,
+		BucketName: "internship-certificates",
 	}
 }
 
-func (s *ObjectStorageService) UploadCertificateHandler(c *gin.Context) {
-	ctx := context.Background()
+func (s *ObjectStorageService) UploadCertificate(ctx context.Context, internshipID int, userID int, file multipart.File, header *multipart.FileHeader) error {
 
-	internshipID := 4
-	prn := "123B1B168"
-	userID := 1
+	// 1️⃣ Check if certificate already exists
+	var result struct {
+		PRN               string `db:"student_prn"`
+		Year              int    `db:"passing_year"`
+		Organization      string `db:"organization"`
+		CertificateExists bool   `db:"certificate_exists"`
+	}
 
-	// ✅ Limit upload size (10MB)
-	c.Request.Body = http.MaxBytesReader(
-		c.Writer,
-		c.Request.Body,
-		10<<20,
-	)
+	err := s.DB.Get(&result, `
+	SELECT
+		i.student_prn,
+		s.passing_year,
+		i.organization,
+		EXISTS (
+			SELECT 1
+			FROM certificates c
+			WHERE c.internship_id = i.id
+		) AS certificate_exists
+	FROM internships i
+	JOIN students s ON s.prn = i.student_prn
+	WHERE i.id = $1
+`, internshipID)
 
-	file, header, err := c.Request.FormFile("certificate")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "certificate file required"})
-		log.Println(err)
-		return
-	}
-	defer file.Close()
-
-	// ✅ Validate file type
-	contentType := header.Header.Get("Content-Type")
-	if contentType != "application/pdf" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "only PDF allowed"})
-		return
+		return fmt.Errorf("internship not found: %w", err)
 	}
 
-	objectKey := fmt.Sprintf(
-		"certificates/%d/%s/%d/%s.pdf",
-		time.Now().Year(),
-		prn,
-		internshipID,
-		uuid.New().String(),
-	)
+	if result.CertificateExists {
+		return fmt.Errorf("certificate already uploaded for this internship")
+	}
 
-	// ✅ Upload to MinIO
-	_, err = s.MinioClient.PutObject(
+	// 2️⃣ Validate file
+	if header.Size > 10<<20 {
+		return fmt.Errorf("file too large")
+	}
+	if header.Header.Get("Content-Type") != "application/pdf" {
+		return fmt.Errorf("only pdf allowed")
+	}
+	safeOrg := strings.ToLower(result.Organization)
+	safeOrg = regexp.MustCompile(`[^a-z0-9_-]`).ReplaceAllString(safeOrg, "_")
+
+	// 3️⃣ Build object key
+	objectKey := fmt.Sprintf("certificates/%d/%s/%s/%s.pdf", result.Year, result.PRN, safeOrg, safeOrg)
+	log.Println(objectKey)
+	// 4️⃣ Upload to MinIO
+	_, err = s.Minio.PutObject(
 		ctx,
 		s.BucketName,
 		objectKey,
 		file,
 		header.Size,
-		minio.PutObjectOptions{
-			ContentType: contentType,
-		},
+		minio.PutObjectOptions{ContentType: "application/pdf"},
 	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "upload to storage failed"})
-		log.Println(err)
-
-		return
+		return err
 	}
 
-	// ✅ DB transaction
-	tx, err := s.DB.Beginx()
-	if err != nil {
-		_ = s.MinioClient.RemoveObject(ctx, s.BucketName, objectKey, minio.RemoveObjectOptions{})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
-	}
-
-	_, err = tx.Exec(`
+	// 5️⃣ Insert DB record
+	_, err = s.DB.Exec(`
 		INSERT INTO certificates
 		(internship_id, object_key, original_filename, mime_type, file_size, uploaded_by)
 		VALUES ($1,$2,$3,$4,$5,$6)
@@ -101,23 +95,96 @@ func (s *ObjectStorageService) UploadCertificateHandler(c *gin.Context) {
 		internshipID,
 		objectKey,
 		header.Filename,
-		contentType,
+		"application/pdf",
 		header.Size,
 		userID,
 	)
-
 	if err != nil {
-		tx.Rollback()
-		_ = s.MinioClient.RemoveObject(ctx, s.BucketName, objectKey, minio.RemoveObjectOptions{})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save metadata"})
-		log.Println(err)
-		return
+		_ = s.Minio.RemoveObject(ctx, s.BucketName, objectKey, minio.RemoveObjectOptions{})
+		return err
 	}
 
-	tx.Commit()
+	return nil
+}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":   "certificate uploaded successfully",
-		"objectKey": objectKey,
-	})
+func (s *ObjectStorageService) RemoveCertificate(
+	ctx context.Context,
+	internshipID int,
+) error {
+
+	var cert struct {
+		ObjectKey string `db:"object_key"`
+	}
+
+	err := s.DB.Get(&cert, `
+		SELECT object_key FROM certificates WHERE internship_id = $1
+	`, internshipID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("certificate not found")
+	}
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.DB.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 1️⃣ Delete DB row
+	_, err = tx.Exec(`
+		DELETE FROM certificates WHERE internship_id = $1
+	`, internshipID)
+	if err != nil {
+		return err
+	}
+
+	// 2️⃣ Delete object from storage
+	err = s.Minio.RemoveObject(
+		ctx,
+		s.BucketName,
+		cert.ObjectKey,
+		minio.RemoveObjectOptions{},
+	)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *ObjectStorageService) GetCertificate(
+	ctx context.Context,
+	internshipID int,
+) (*minio.Object, string, error) {
+
+	var cert struct {
+		ObjectKey string `db:"object_key"`
+		MimeType  string `db:"mime_type"`
+	}
+
+	err := s.DB.Get(&cert, `
+		SELECT object_key, mime_type
+		FROM certificates
+		WHERE internship_id = $1
+	`, internshipID)
+	if err == sql.ErrNoRows {
+		return nil, "", fmt.Errorf("certificate not found")
+	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	obj, err := s.Minio.GetObject(
+		ctx,
+		s.BucketName,
+		cert.ObjectKey,
+		minio.GetObjectOptions{},
+	)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return obj, cert.MimeType, nil
 }
