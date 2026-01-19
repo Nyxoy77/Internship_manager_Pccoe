@@ -51,22 +51,25 @@ func (s *StudentService) GetStudentSummary(prn string) (*models.StudentSummaryRe
 	}
 
 	internshipQuery := `
-		SELECT
-			i.id,
-			i.organization,
-			i.description,
-			i.start_date,
-			i.end_date,
-			i.mode,
-			i.credits,
-			i.monthly_stipend,
-			i.status,
-			i.created_at,
-			i.approved_at
-		FROM internships i
-		WHERE i.student_prn = $1
-		ORDER BY i.start_date DESC
-	`
+    SELECT
+        i.id,
+        i.organization,
+        i.description,
+        i.start_date,
+        i.end_date,
+        i.mode,
+        i.credits,
+        i.monthly_stipend,
+        i.status,
+        i.created_at,
+        i.approved_at,
+        (c.id IS NOT NULL) AS has_certificate
+    FROM internships i
+    LEFT JOIN certificates c
+        ON c.internship_id = i.id
+    WHERE i.student_prn = $1
+    ORDER BY i.start_date DESC
+`
 
 	var internships []*models.StudentInternshipResponse
 	if err := s.db.Select(&internships, internshipQuery, prn); err != nil {
@@ -141,5 +144,3 @@ func (s *StudentService) StudentExists(prn string) (bool, error) {
 	}
 	return exists, nil
 }
-
-

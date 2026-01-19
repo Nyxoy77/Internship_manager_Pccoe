@@ -45,4 +45,5 @@ type StudentInternshipResponse struct {
 	CreatedAt       time.Time  `db:"created_at" json:"createdAt"`
 	ApprovedBy      *int       `db:"approved_by" json:"approvedBy,omitempty"`
 	ApprovedAt      *time.Time `db:"approved_at" json:"approvedAt,omitempty"`
+	HasCertificate  bool       `db:"has_certificate" json:"hasCertificate"`
 }
