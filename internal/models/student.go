@@ -33,6 +33,13 @@ type StudentListItem struct {
 	TotalCredits int    `json:"totalCredits" db:"total_credits"`
 }
 
+type StudentListResponse struct {
+	Items    []StudentListItem `json:"items"`
+	Page     int               `json:"page"`
+	PageSize int               `json:"pageSize"`
+	Total    int               `json:"total"`
+}
+
 type StudentInternshipResponse struct {
 	ID              int        `db:"id" json:"id"`
 	Organization    string     `db:"organization" json:"organization"`
@@ -44,6 +51,7 @@ type StudentInternshipResponse struct {
 	MonthlyStipend  float64    `db:"monthly_stipend" json:"monthlyStipend"`
 	StipendCurrency string     `db:"stipend_currency" json:"stipendCurrency"`
 	Status          string     `db:"status" json:"status"`
+	WorkflowStatus  string     `db:"workflow_status" json:"workflowStatus"`
 	CreatedBy       int        `db:"created_by" json:"createdBy"`
 	CreatedAt       time.Time  `db:"created_at" json:"createdAt"`
 	ApprovedBy      *int       `db:"approved_by" json:"approvedBy,omitempty"`

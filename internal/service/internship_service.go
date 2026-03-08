@@ -49,13 +49,17 @@ func (s *InternshipService) CreateInternship(
 			credits,
 			monthly_stipend,
 			status,
+			workflow_status,
 			credit_eligible,
 			created_by
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',FALSE,$9)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending','certificate_pending',FALSE,$9)
+		RETURNING id
 	`
 
-	_, err = s.db.Exec(
+	var internshipID int
+	err = s.db.Get(
+		&internshipID,
 		query,
 		req.PRN,
 		req.Organization,
@@ -71,6 +75,7 @@ func (s *InternshipService) CreateInternship(
 	if err != nil {
 		return nil, err
 	}
+	_ = logInternshipAudit(s.db, internshipID, "internship_created", req.Description, &createdBy)
 
 	return &models.CreateInternshipResponse{
 		Message:  "Internship created successfully",
@@ -85,6 +90,65 @@ func isEmptyInternshipRow(req *models.CreateInternshipRequest) bool {
 		req.Credits == 0 &&
 		strings.TrimSpace(req.Mode) == "" &&
 		req.MonthlyStipend == 0
+}
+
+func makeBatchError(processedRow int, sheetRow int, message string) models.BatchUploadError {
+	return models.BatchUploadError{
+		Row:          processedRow,
+		ProcessedRow: processedRow,
+		SheetRow:     sheetRow,
+		Error:        message,
+	}
+}
+
+func missingRequiredFields(req *models.CreateInternshipRequest) []string {
+	var missing []string
+	if strings.TrimSpace(req.PRN) == "" {
+		missing = append(missing, "prn")
+	}
+	if strings.TrimSpace(req.Organization) == "" {
+		missing = append(missing, "organization")
+	}
+	if strings.TrimSpace(req.StartDate) == "" {
+		missing = append(missing, "startDate")
+	}
+	if strings.TrimSpace(req.EndDate) == "" {
+		missing = append(missing, "endDate")
+	}
+	if strings.TrimSpace(req.Mode) == "" {
+		missing = append(missing, "mode")
+	}
+	if req.Credits <= 0 {
+		missing = append(missing, "credits")
+	}
+	return missing
+}
+
+func classifyBatchValidationError(req *models.CreateInternshipRequest, err error) (category, field, rawValue, suggestion string) {
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+
+	if strings.Contains(msg, "student with prn") && strings.Contains(msg, "not found") {
+		return "reference_not_found", "prn", req.PRN, "Upload student master first or correct PRN in the sheet"
+	}
+	if strings.Contains(msg, "invalid internship mode") {
+		return "invalid_value", "mode", req.RawMode, "Use one of: online, offline, hybrid"
+	}
+	if strings.Contains(msg, "invalid start date format") {
+		return "invalid_value", "startDate", req.RawStartDate, "Use YYYY-MM-DD or a valid Excel date value"
+	}
+	if strings.Contains(msg, "invalid end date format") {
+		return "invalid_value", "endDate", req.RawEndDate, "Use YYYY-MM-DD or a valid Excel date value"
+	}
+	if strings.Contains(msg, "end date must be after or equal to start date") {
+		return "invalid_value", "endDate", req.RawEndDate, "End date must be on or after start date"
+	}
+	if strings.Contains(msg, "credits must be greater than 0") {
+		return "invalid_value", "credits", strconv.Itoa(req.Credits), "Provide credits greater than zero"
+	}
+	if strings.Contains(msg, "monthly stipend cannot be negative") {
+		return "invalid_value", "monthlyStipend", fmt.Sprintf("%g", req.MonthlyStipend), "Provide stipend >= 0"
+	}
+	return "validation_error", "", "", ""
 }
 
 // func (s *InternshipService) BatchCreateInternships(
@@ -186,19 +250,19 @@ func (s *InternshipService) BatchCreateInternships(
 		TotalRows: len(requests),
 	}
 
-	tx, err := s.db.Beginx()
-	if err != nil {
-		response.Failed = len(requests)
-		response.Errors = append(response.Errors, models.BatchUploadError{
-			Row:   0,
-			Error: "failed to start database transaction",
-		})
-		return response
+	type preparedInternship struct {
+		req       models.CreateInternshipRequest
+		startDate time.Time
+		endDate   time.Time
 	}
-	defer tx.Rollback()
+	prepared := make([]preparedInternship, 0, len(requests))
 
 	for i, req := range requests {
 		rowNum := i + 1
+		if req.ProcessedRow > 0 {
+			rowNum = req.ProcessedRow
+		}
+		sheetRow := req.SheetRow
 
 		// Sanitization
 		req.PRN = strings.TrimSpace(req.PRN)
@@ -211,80 +275,122 @@ func (s *InternshipService) BatchCreateInternships(
 			continue
 		}
 
+		missing := missingRequiredFields(&req)
+		if len(missing) > 0 {
+			errItem := makeBatchError(rowNum, sheetRow, "incomplete internship row")
+			errItem.Category = "incomplete_row"
+			errItem.Field = strings.Join(missing, ",")
+			errItem.Suggestion = "Fill required fields: prn, organization, startDate, endDate, mode, credits"
+			response.Errors = append(response.Errors, errItem)
+			continue
+		}
+
 		startDate, endDate, err := s.validateAndPrepareInternship(&req)
 		if err != nil {
-			response.Failed++
-			response.Errors = append(response.Errors, models.BatchUploadError{
-				Row:   rowNum,
-				Error: err.Error(),
-			})
+			errItem := makeBatchError(rowNum, sheetRow, err.Error())
+			errItem.Category, errItem.Field, errItem.RawValue, errItem.Suggestion = classifyBatchValidationError(&req, err)
+			response.Errors = append(response.Errors, errItem)
 			continue
 		}
 
 		warnings, warnErr := s.detectSubmissionWarnings(req.PRN, req.Organization, startDate, endDate)
 		if warnErr != nil {
-			response.Failed++
-			response.Errors = append(response.Errors, models.BatchUploadError{
-				Row:   rowNum,
-				Error: "failed to evaluate submission warnings",
-			})
+			errItem := makeBatchError(rowNum, sheetRow, "failed to evaluate submission warnings")
+			errItem.Category = "processing_error"
+			response.Errors = append(response.Errors, errItem)
 			continue
 		}
 		if len(warnings) > 0 {
 			response.Warnings = append(response.Warnings, models.BatchUploadWarning{
-				Row:     rowNum,
-				Message: "potential conflict detected",
-				Items:   warnings,
+				Row:          rowNum,
+				ProcessedRow: rowNum,
+				SheetRow:     sheetRow,
+				Message:      "potential conflict detected",
+				Items:        warnings,
 			})
 		}
 
-		_, err = tx.Exec(`
-			INSERT INTO internships (
-				student_prn,
-				organization,
+		prepared = append(prepared, preparedInternship{
+			req:       req,
+			startDate: startDate,
+			endDate:   endDate,
+		})
+	}
+
+	if len(response.Errors) > 0 {
+		response.Inserted = 0
+		response.Failed = len(response.Errors)
+		summary := makeBatchError(0, 0, "batch aborted: fix listed rows and retry; no internships were inserted")
+		summary.Category = "batch_aborted"
+		summary.Suggestion = "Resolve all row errors first, then upload again"
+		response.Errors = append([]models.BatchUploadError{summary}, response.Errors...)
+		return response
+	}
+
+	tx, err := s.db.Beginx()
+	if err != nil {
+		response.Failed = len(requests)
+		response.Errors = append(response.Errors, makeBatchError(0, 0, "failed to start database transaction"))
+		return response
+	}
+	defer tx.Rollback()
+
+	for _, item := range prepared {
+		var insertedID int
+		err := tx.Get(&insertedID, `
+				INSERT INTO internships (
+					student_prn,
+					organization,
 				description,
 				start_date,
 				end_date,
 				mode,
 				credits,
-				monthly_stipend,
-				status,
-				credit_eligible,
-				created_by
-			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',FALSE,$9)
-		`,
-			req.PRN,
-			req.Organization,
-			req.Description,
-			startDate,
-			endDate,
-			req.Mode,
-			req.Credits,
-			req.MonthlyStipend,
+					monthly_stipend,
+					status,
+					workflow_status,
+					credit_eligible,
+					created_by
+				)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending','certificate_pending',FALSE,$9)
+				RETURNING id
+			`,
+			item.req.PRN,
+			item.req.Organization,
+			item.req.Description,
+			item.startDate,
+			item.endDate,
+			item.req.Mode,
+			item.req.Credits,
+			item.req.MonthlyStipend,
 			createdBy,
 		)
 
 		if err != nil {
-			response.Failed++
-			response.Errors = append(response.Errors, models.BatchUploadError{
-				Row:   rowNum,
-				Error: "database insert failed",
-			})
-			continue
+			rowNum := item.req.ProcessedRow
+			if rowNum == 0 {
+				rowNum = 1
+			}
+			errItem := makeBatchError(rowNum, item.req.SheetRow, "database insert failed")
+			errItem.Category = "processing_error"
+			errItem.Suggestion = "Check duplicate records/constraints and retry"
+			response.Errors = append(response.Errors, errItem)
+			response.Inserted = 0
+			response.Failed = len(prepared)
+			return response
 		}
+		_ = logInternshipAudit(tx, insertedID, "internship_created", item.req.Description, &createdBy)
 
 		response.Inserted++
 	}
 
-	// Commit whatever was valid
+	// Commit only after all rows inserted successfully.
 	if err := tx.Commit(); err != nil {
 		response.Inserted = 0
-		response.Failed = len(requests)
-		response.Errors = append(response.Errors, models.BatchUploadError{
-			Row:   0,
-			Error: "failed to commit transaction",
-		})
+		response.Failed = len(prepared)
+		errItem := makeBatchError(0, 0, "failed to commit transaction")
+		errItem.Category = "processing_error"
+		response.Errors = append(response.Errors, errItem)
 	}
 
 	return response
@@ -306,19 +412,23 @@ func (s *InternshipService) ApproveInternship(
 	err = tx.Get(&prn, `
 		UPDATE internships
 		SET status = 'approved',
+		    workflow_status = 'approved',
 		    approved_by = $1,
 		    approved_at = NOW(),
 		    review_note = NULLIF(TRIM($3), '')
 		WHERE id = $2
 		  AND status = 'pending'
-		RETURNING student_prn
+		RETURNING COALESCE(student_prn, '')
 	`, approvedBy, internshipID, reviewNote)
 	if err != nil {
 		return fmt.Errorf("internship not found or already processed")
 	}
+	_ = logInternshipAudit(tx, internshipID, "approved", reviewNote, &approvedBy)
 
-	if err := s.recalculateCreditEligibilityTx(tx, prn); err != nil {
-		return err
+	if prn != "" {
+		if err := s.recalculateCreditEligibilityTx(tx, prn); err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit()
@@ -340,20 +450,24 @@ func (s *InternshipService) RejectInternship(
 	err = tx.Get(&prn, `
 		UPDATE internships
 		SET status = 'rejected',
+		    workflow_status = 'rejected',
 		    approved_by = $1,
 		    approved_at = NOW(),
 		    review_note = NULLIF(TRIM($3), '')
 		WHERE id = $2
 		  AND status = 'pending'
-		RETURNING student_prn
+		RETURNING COALESCE(student_prn, '')
 	`, approvedBy, internshipID, reviewNote)
 	if err != nil {
 		return fmt.Errorf("internship not found or already processed")
 	}
+	_ = logInternshipAudit(tx, internshipID, "rejected", reviewNote, &approvedBy)
 
 	// Approved competitor removed → recalc
-	if err := s.recalculateCreditEligibilityTx(tx, prn); err != nil {
-		return err
+	if prn != "" {
+		if err := s.recalculateCreditEligibilityTx(tx, prn); err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit()
@@ -401,7 +515,8 @@ func (s *InternshipService) recalculateCreditEligibilityTx(tx *sqlx.Tx, prn stri
 		group := []internshipRow{internships[i]}
 
 		j := i + 1
-		for j < n && (internships[j].StartDate.Before(groupEnd)) {
+		// Treat touching ranges as overlapping (inclusive boundary), matching upload overlap detection.
+		for j < n && !internships[j].StartDate.After(groupEnd) {
 			group = append(group, internships[j])
 			if internships[j].EndDate.After(groupEnd) {
 				groupEnd = internships[j].EndDate
@@ -410,10 +525,11 @@ func (s *InternshipService) recalculateCreditEligibilityTx(tx *sqlx.Tx, prn stri
 		}
 
 		longestID := group[0].ID
-		maxDuration := int(group[0].EndDate.Sub(group[0].StartDate).Hours() / 24)
+		// Inclusive day-span so a same-day internship counts as 1 day.
+		maxDuration := int(group[0].EndDate.Sub(group[0].StartDate).Hours()/24) + 1
 
 		for _, in := range group {
-			dur := int(in.EndDate.Sub(in.StartDate).Hours() / 24)
+			dur := int(in.EndDate.Sub(in.StartDate).Hours()/24) + 1
 			if dur > maxDuration {
 				maxDuration = dur
 				longestID = in.ID
@@ -586,6 +702,7 @@ func (s *InternshipService) ListInternships(
 	page int,
 	pageSize int,
 	status string,
+	workflowStatus string,
 	organization string,
 	guide string,
 	prn string,
@@ -604,6 +721,143 @@ func (s *InternshipService) ListInternships(
 		pageSize = 100
 	}
 
+	whereClause, args, argPos := buildInternshipListWhereClause(
+		status,
+		workflowStatus,
+		organization,
+		guide,
+		prn,
+		dateFrom,
+		dateTo,
+		year,
+		division,
+	)
+
+	countQuery := `
+		SELECT COUNT(1)
+		FROM internships i
+		JOIN students s ON s.prn = i.student_prn
+	` + whereClause
+
+	var total int
+	if err := s.db.Get(&total, countQuery, args...); err != nil {
+		return nil, fmt.Errorf("failed to count internships: %w", err)
+	}
+
+	offset := (page - 1) * pageSize
+	dataArgs := append(args, pageSize, offset)
+	query := `
+		SELECT
+			i.id,
+			i.student_prn,
+			i.organization,
+			i.description,
+			s.guide_name,
+			i.start_date,
+			i.end_date,
+			i.mode,
+			i.credits,
+			i.monthly_stipend,
+			i.stipend_currency,
+			i.status,
+			i.workflow_status,
+			i.created_by,
+			i.created_at,
+			i.approved_by,
+			i.approved_at,
+			i.review_note,
+			s.name AS student_name,
+			s.passing_year AS year,
+			s.division
+		FROM internships i
+		JOIN students s ON i.student_prn = s.prn
+	` + whereClause + `
+		ORDER BY i.created_at DESC
+		LIMIT $` + strconv.Itoa(argPos) + ` OFFSET $` + strconv.Itoa(argPos+1)
+
+	var items []models.InternshipWithStudentName
+	if err := s.db.Select(&items, query, dataArgs...); err != nil {
+		return nil, fmt.Errorf("failed to list internships: %w", err)
+	}
+
+	return &models.InternshipListResponse{
+		Items:    items,
+		Page:     page,
+		PageSize: pageSize,
+		Total:    total,
+	}, nil
+}
+
+func (s *InternshipService) ListInternshipsForExport(
+	status string,
+	workflowStatus string,
+	organization string,
+	guide string,
+	prn string,
+	dateFrom string,
+	dateTo string,
+	year *int,
+	division string,
+) ([]models.InternshipWithStudentName, error) {
+	whereClause, args, _ := buildInternshipListWhereClause(
+		status,
+		workflowStatus,
+		organization,
+		guide,
+		prn,
+		dateFrom,
+		dateTo,
+		year,
+		division,
+	)
+
+	query := `
+		SELECT
+			i.id,
+			i.student_prn,
+			i.organization,
+			i.description,
+			s.guide_name,
+			i.start_date,
+			i.end_date,
+			i.mode,
+			i.credits,
+			i.monthly_stipend,
+			i.stipend_currency,
+			i.status,
+			i.workflow_status,
+			i.created_by,
+			i.created_at,
+			i.approved_by,
+			i.approved_at,
+			i.review_note,
+			s.name AS student_name,
+			s.passing_year AS year,
+			s.division
+		FROM internships i
+		JOIN students s ON i.student_prn = s.prn
+	` + whereClause + `
+		ORDER BY i.created_at DESC
+	`
+
+	var items []models.InternshipWithStudentName
+	if err := s.db.Select(&items, query, args...); err != nil {
+		return nil, fmt.Errorf("failed to list internships for export: %w", err)
+	}
+	return items, nil
+}
+
+func buildInternshipListWhereClause(
+	status string,
+	workflowStatus string,
+	organization string,
+	guide string,
+	prn string,
+	dateFrom string,
+	dateTo string,
+	year *int,
+	division string,
+) (string, []interface{}, int) {
 	where := []string{"1=1"}
 	args := []interface{}{}
 	argPos := 1
@@ -611,6 +865,11 @@ func (s *InternshipService) ListInternships(
 	if status != "" {
 		where = append(where, "i.status = $"+strconv.Itoa(argPos))
 		args = append(args, status)
+		argPos++
+	}
+	if strings.TrimSpace(workflowStatus) != "" {
+		where = append(where, "i.workflow_status = $"+strconv.Itoa(argPos))
+		args = append(args, strings.TrimSpace(workflowStatus))
 		argPos++
 	}
 	if organization != "" {
@@ -643,66 +902,13 @@ func (s *InternshipService) ListInternships(
 		args = append(args, *year)
 		argPos++
 	}
-	if division != "" {
+	if strings.TrimSpace(division) != "" {
 		where = append(where, "LOWER(s.division) = LOWER($"+strconv.Itoa(argPos)+")")
 		args = append(args, strings.TrimSpace(division))
 		argPos++
 	}
 
-	whereClause := " WHERE " + strings.Join(where, " AND ")
-
-	countQuery := `
-		SELECT COUNT(1)
-		FROM internships i
-		JOIN students s ON s.prn = i.student_prn
-	` + whereClause
-
-	var total int
-	if err := s.db.Get(&total, countQuery, args...); err != nil {
-		return nil, fmt.Errorf("failed to count internships: %w", err)
-	}
-
-	offset := (page - 1) * pageSize
-	dataArgs := append(args, pageSize, offset)
-	query := `
-		SELECT
-			i.id,
-			i.student_prn,
-			i.organization,
-			i.description,
-			s.guide_name,
-			i.start_date,
-			i.end_date,
-			i.mode,
-			i.credits,
-			i.monthly_stipend,
-			i.stipend_currency,
-			i.status,
-			i.created_by,
-			i.created_at,
-			i.approved_by,
-			i.approved_at,
-			i.review_note,
-			s.name AS student_name,
-			s.passing_year AS year,
-			s.division
-		FROM internships i
-		JOIN students s ON i.student_prn = s.prn
-	` + whereClause + `
-		ORDER BY i.created_at DESC
-		LIMIT $` + strconv.Itoa(argPos) + ` OFFSET $` + strconv.Itoa(argPos+1)
-
-	var items []models.InternshipWithStudentName
-	if err := s.db.Select(&items, query, dataArgs...); err != nil {
-		return nil, fmt.Errorf("failed to list internships: %w", err)
-	}
-
-	return &models.InternshipListResponse{
-		Items:    items,
-		Page:     page,
-		PageSize: pageSize,
-		Total:    total,
-	}, nil
+	return " WHERE " + strings.Join(where, " AND "), args, argPos
 }
 
 func (s *InternshipService) BulkReviewInternships(req *models.BulkReviewRequest, approvedBy int) (*models.BulkReviewResponse, error) {
@@ -759,12 +965,13 @@ func (s *InternshipService) BulkReviewInternships(req *models.BulkReviewRequest,
 	updateQuery, updateArgs, err := sqlx.In(`
 		UPDATE internships
 		SET status = ?,
+		    workflow_status = ?,
 		    approved_by = ?,
 		    approved_at = NOW(),
 		    review_note = NULLIF(TRIM(?), '')
 		WHERE id IN (?)
 		  AND status = 'pending'
-	`, status, approvedBy, req.ReviewNote, ids)
+	`, status, status, approvedBy, req.ReviewNote, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -787,6 +994,13 @@ func (s *InternshipService) BulkReviewInternships(req *models.BulkReviewRequest,
 		if err := s.recalculateCreditEligibilityTx(tx, studentPRN); err != nil {
 			return nil, err
 		}
+	}
+	auditAction := "approved"
+	if req.Action == "reject" {
+		auditAction = "rejected"
+	}
+	for _, id := range ids {
+		_ = logInternshipAudit(tx, id, auditAction, req.ReviewNote, &approvedBy)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -820,9 +1034,25 @@ func uniqueInts(input []int) []int {
 	return out
 }
 
+func (s *InternshipService) GetInternshipAudit(internshipID int) ([]models.InternshipAuditEvent, error) {
+	var logs []models.InternshipAuditEvent
+	if err := s.db.Select(&logs, `
+		SELECT id, internship_id, action, COALESCE(note, '') AS note, actor_user_id, actor_role, created_at
+		FROM internship_audit_logs
+		WHERE internship_id = $1
+		ORDER BY created_at DESC
+	`, internshipID); err != nil {
+		return nil, fmt.Errorf("failed to load internship audit trail: %w", err)
+	}
+	if logs == nil {
+		return []models.InternshipAuditEvent{}, nil
+	}
+	return logs, nil
+}
+
 // GetPendingInternships returns all pending internships
 func (s *InternshipService) GetPendingInternships() ([]models.InternshipWithStudentName, error) {
-	resp, err := s.ListInternships(1, 1000, "pending", "", "", "", "", "", nil, "")
+	resp, err := s.ListInternships(1, 1000, "pending", "", "", "", "", "", "", nil, "")
 	if err != nil {
 		return nil, err
 	}

@@ -13,7 +13,12 @@ type CreateInternshipRequest struct {
 	EndDate        string  `json:"endDate" binding:"required,datetime=2006-01-02"`
 	Mode           string  `json:"mode" binding:"required,oneof=online offline hybrid"`
 	Credits        int     `json:"credits" binding:"required,gt=0"`
-	MonthlyStipend float64 `json:"monthlyStipend" binding:"required,gte=0"`
+	MonthlyStipend float64 `json:"monthlyStipend" binding:"gte=0"`
+	ProcessedRow   int     `json:"-"`
+	SheetRow       int     `json:"-"`
+	RawStartDate   string  `json:"-"`
+	RawEndDate     string  `json:"-"`
+	RawMode        string  `json:"-"`
 }
 
 // Internship represents the internship database model
@@ -35,6 +40,7 @@ type Internship struct {
 	ApprovedBy      *int       `db:"approved_by" json:"approvedBy,omitempty"`
 	ApprovedAt      *time.Time `db:"approved_at" json:"approvedAt,omitempty"`
 	ReviewNote      *string    `db:"review_note" json:"reviewNote,omitempty"`
+	WorkflowStatus  string     `db:"workflow_status" json:"workflowStatus"`
 }
 
 // InternshipWithStudentName extends Internship with student name for display
@@ -61,14 +67,22 @@ type BatchUploadResponse struct {
 
 // BatchUploadError represents an error in batch upload
 type BatchUploadError struct {
-	Row   int    `json:"row"`
-	Error string `json:"error"`
+	Row          int    `json:"row"`
+	ProcessedRow int    `json:"processedRow,omitempty"`
+	SheetRow     int    `json:"sheetRow,omitempty"`
+	Category     string `json:"category,omitempty"`
+	Field        string `json:"field,omitempty"`
+	RawValue     string `json:"rawValue,omitempty"`
+	Suggestion   string `json:"suggestion,omitempty"`
+	Error        string `json:"error"`
 }
 
 type BatchUploadWarning struct {
-	Row     int      `json:"row"`
-	Message string   `json:"message"`
-	Items   []string `json:"items,omitempty"`
+	Row          int      `json:"row"`
+	ProcessedRow int      `json:"processedRow,omitempty"`
+	SheetRow     int      `json:"sheetRow,omitempty"`
+	Message      string   `json:"message"`
+	Items        []string `json:"items,omitempty"`
 }
 
 // ApprovalRequest represents approval/rejection action
@@ -93,4 +107,14 @@ type InternshipListResponse struct {
 	Page     int                         `json:"page"`
 	PageSize int                         `json:"pageSize"`
 	Total    int                         `json:"total"`
+}
+
+type InternshipAuditEvent struct {
+	ID         int       `db:"id" json:"id"`
+	Internship int       `db:"internship_id" json:"internshipId"`
+	Action     string    `db:"action" json:"action"`
+	Note       string    `db:"note" json:"note"`
+	ActorUser  *int      `db:"actor_user_id" json:"actorUserId,omitempty"`
+	ActorRole  *string   `db:"actor_role" json:"actorRole,omitempty"`
+	CreatedAt  time.Time `db:"created_at" json:"createdAt"`
 }

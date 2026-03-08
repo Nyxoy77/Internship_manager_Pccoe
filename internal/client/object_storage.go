@@ -21,20 +21,20 @@ func NewCertificateClient(s *service.ObjectStorageService) *CertificateClient {
 func (cc *CertificateClient) UploadCertificate(c *gin.Context) {
 	internshipID, err := strconv.Atoi(c.Param("internshipId"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid internship id"})
+		errorResponse(c, http.StatusBadRequest, "invalid internship id")
 		return
 	}
 
 	// assume auth middleware sets this
 	userID, exists := c.Get("userID")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		errorResponse(c, http.StatusUnauthorized, "User not authenticated")
 		return
 	}
 
 	uploadedBy, ok := userID.(int)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID"})
+		errorResponse(c, http.StatusInternalServerError, "Invalid user ID")
 		return
 	}
 
@@ -43,7 +43,7 @@ func (cc *CertificateClient) UploadCertificate(c *gin.Context) {
 
 	file, header, err := c.Request.FormFile("certificate")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "certificate file required"})
+		errorResponse(c, http.StatusBadRequest, "certificate file required")
 		return
 	}
 	defer file.Close()
@@ -56,7 +56,7 @@ func (cc *CertificateClient) UploadCertificate(c *gin.Context) {
 		header,
 	)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		errorResponse(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -66,14 +66,22 @@ func (cc *CertificateClient) UploadCertificate(c *gin.Context) {
 func (cc *CertificateClient) RemoveCertificate(c *gin.Context) {
 	internshipID, err := strconv.Atoi(c.Param("internshipId"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid internship id"})
+		errorResponse(c, http.StatusBadRequest, "invalid internship id")
 		return
 	}
-	if err := cc.Service.RemoveCertificate(c.Request.Context(), internshipID); err != nil {
+	userID, exists := c.Get("userID")
+	if !exists {
+		errorResponse(c, http.StatusUnauthorized, "User not authenticated")
+		return
+	}
+	removedBy, ok := userID.(int)
+	if !ok {
+		errorResponse(c, http.StatusInternalServerError, "Invalid user ID")
+		return
+	}
+	if err := cc.Service.RemoveCertificate(c.Request.Context(), internshipID, removedBy); err != nil {
 		log.Println("error while removing the certificate", err)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "error while removing the certificate",
-		})
+		errorResponse(c, http.StatusBadRequest, "error while removing the certificate")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -84,13 +92,13 @@ func (cc *CertificateClient) RemoveCertificate(c *gin.Context) {
 func (cc *CertificateClient) DownloadViewCertificate(c *gin.Context) {
 	internshipID, err := strconv.Atoi(c.Param("internshipId"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid internship id"})
+		errorResponse(c, http.StatusBadRequest, "invalid internship id")
 		return
 	}
 
 	object, mimeType, err := cc.Service.GetCertificate(c.Request.Context(), internshipID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		errorResponse(c, http.StatusNotFound, err.Error())
 		return
 	}
 	defer object.Close()

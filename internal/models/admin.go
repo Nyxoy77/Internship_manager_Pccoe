@@ -6,6 +6,12 @@ type CreateStudentRequest struct {
 	GuideName   string `json:"guide_name"`
 	PassingYear int    `json:"passing_year" binding:"required"`
 	Division    string `json:"division" binding:"required"`
+	ProcessedRow int    `json:"-"`
+	SheetRow     int    `json:"-"`
+	RawPRN       string `json:"-"`
+	RawYear      string `json:"-"`
+	RawDivision  string `json:"-"`
+	RawGuideName string `json:"-"`
 }
 
 type CreateUserRequest struct {

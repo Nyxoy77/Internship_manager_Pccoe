@@ -103,6 +103,13 @@ func (s *ObjectStorageService) UploadCertificate(ctx context.Context, internship
 		_ = s.Minio.RemoveObject(ctx, s.BucketName, objectKey, minio.RemoveObjectOptions{})
 		return err
 	}
+	_, _ = s.DB.Exec(`
+		UPDATE internships
+		SET workflow_status = 'certificate_uploaded'
+		WHERE id = $1
+		  AND status = 'pending'
+	`, internshipID)
+	_ = logInternshipAudit(s.DB, internshipID, "certificate_uploaded", header.Filename, &userID)
 
 	return nil
 }
@@ -110,6 +117,7 @@ func (s *ObjectStorageService) UploadCertificate(ctx context.Context, internship
 func (s *ObjectStorageService) RemoveCertificate(
 	ctx context.Context,
 	internshipID int,
+	removedBy int,
 ) error {
 
 	var cert struct {
@@ -139,6 +147,13 @@ func (s *ObjectStorageService) RemoveCertificate(
 	if err != nil {
 		return err
 	}
+	_, _ = tx.Exec(`
+		UPDATE internships
+		SET workflow_status = 'certificate_pending'
+		WHERE id = $1
+		  AND status = 'pending'
+	`, internshipID)
+	_ = logInternshipAudit(tx, internshipID, "certificate_removed", "", &removedBy)
 
 	// 2️⃣ Delete object from storage
 	err = s.Minio.RemoveObject(

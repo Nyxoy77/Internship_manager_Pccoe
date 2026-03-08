@@ -37,6 +37,8 @@ CREATE TABLE internships (
   monthly_stipend NUMERIC(10,2) NOT NULL CHECK (monthly_stipend >= 0),
   stipend_currency CHAR(3) NOT NULL DEFAULT 'INR',
   status VARCHAR(20) NOT NULL CHECK (status IN ('pending','approved','rejected')) DEFAULT 'pending',
+  workflow_status VARCHAR(30) NOT NULL DEFAULT 'certificate_pending'
+    CHECK (workflow_status IN ('certificate_pending', 'certificate_uploaded', 'pending_review', 'approved', 'rejected')),
   created_by INT REFERENCES users(id),
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   approved_by INT REFERENCES users(id),
@@ -58,8 +60,19 @@ CREATE TABLE certificates (
   uploaded_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE internship_audit_logs (
+  id SERIAL PRIMARY KEY,
+  internship_id INT NOT NULL REFERENCES internships(id) ON DELETE CASCADE,
+  action VARCHAR(50) NOT NULL,
+  note TEXT,
+  actor_user_id INT REFERENCES users(id),
+  actor_role VARCHAR(20),
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 -- Indexes for performance
 CREATE INDEX idx_internships_student_prn ON internships(student_prn);
 CREATE INDEX idx_internships_status ON internships(status);
 CREATE INDEX idx_students_year_division ON students(passing_year, division);
 CREATE INDEX idx_certificates_internship_id ON certificates(internship_id);
+CREATE INDEX idx_internship_audit_logs_internship_id ON internship_audit_logs(internship_id, created_at DESC);

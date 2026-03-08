@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -38,7 +39,7 @@ func main() {
 	objectStorageService := service.NewObjectStorageService(db, minioClient)
 	// Initialize services
 	studentService := service.NewStudentService(db)
-	authService := service.NewAuthService(db, cfg.JWTSecret)
+	authService := service.NewAuthService(db, cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 	internshipService := service.NewInternshipService(db, studentService)
 	analyticsSvc := service.NewAnalyticsService(db)
 	adminSvc := service.NewAdminService(db)
@@ -53,12 +54,13 @@ func main() {
 	userHandler := client.NewUserHandler(userService)
 	// Setup Gin router
 	router := gin.Default()
+	router.Use(middleware.RequestIDMiddleware())
 
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:8081"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
-		ExposeHeaders:    []string{"Content-Length"},
+		ExposeHeaders:    []string{"Content-Length", "X-Request-ID"},
 		AllowCredentials: true,
 	}))
 
@@ -71,23 +73,36 @@ func main() {
 	api := router.Group("/api")
 	{
 		// Public routes
-		api.POST("/login", authHandler.Login)
+		api.POST("/login", middleware.LoginRateLimitMiddleware(cfg.LoginRateLimit, time.Duration(cfg.LoginRateWindowSecs)*time.Second), authHandler.Login)
+		api.POST("/refresh", authHandler.Refresh)
 
 		protected := api.Group("")
 		protected.Use(middleware.AuthMiddleware(authService))
 		{
 			protected.GET("/student/:prn/summary", studentHandler.GetStudentSummary)
 			protected.GET("/students", studentHandler.ListStudents)
+			protected.GET("/reports/student-credits", studentHandler.ListStudentCreditReport)
+			protected.GET("/reports/student-credits/export.csv", studentHandler.ExportStudentCreditReportCSV)
+			protected.GET("/reports/student-credits/export.pdf", studentHandler.ExportStudentCreditReportPDF)
 			protected.GET("/internships", internshipHandler.ListInternships)
+			protected.GET("/internships/export.csv", internshipHandler.ExportInternshipsCSV)
+			protected.GET("/internships/export.pdf", internshipHandler.ExportInternshipsPDF)
+			protected.GET("/internship/:id/audit", internshipHandler.GetInternshipAudit)
 			protected.POST("/changePassword", userHandler.ChangePassword)
+
+			certificateRoutes := protected.Group("")
+			certificateRoutes.Use(middleware.RequireRole("manager", "admin"))
+			{
+				certificateRoutes.POST("/internships/:internshipId/certificate", objectStorageHandler.UploadCertificate)
+				certificateRoutes.DELETE("/internships/:internshipId/certificate", objectStorageHandler.RemoveCertificate)
+				certificateRoutes.GET("/internships/:internshipId/certificate", objectStorageHandler.DownloadViewCertificate)
+			}
+
 			managerRoutes := protected.Group("")
 			managerRoutes.Use(middleware.RequireRole("manager"))
 			{
 				managerRoutes.POST("/internship", internshipHandler.CreateInternship)
 				managerRoutes.POST("/internships/upload", internshipHandler.BatchUploadInternships)
-				managerRoutes.POST("/internships/:internshipId/certificate", objectStorageHandler.UploadCertificate)
-				managerRoutes.DELETE("/internships/:internshipId/certificate", objectStorageHandler.RemoveCertificate)
-				managerRoutes.GET("/internships/:internshipId/certificate", objectStorageHandler.DownloadViewCertificate)
 			}
 
 			adminRoutes := protected.Group("")

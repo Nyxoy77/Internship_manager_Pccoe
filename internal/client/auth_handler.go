@@ -28,7 +28,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	// Bind and validate request
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		errorResponse(c, http.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	req.Password = strings.TrimSpace(req.Password)
@@ -37,13 +37,37 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	response, err := h.authService.Login(req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+			errorResponse(c, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
 		log.Printf("login failed for user %q: %v", req.Username, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "login failed"})
+		errorResponse(c, http.StatusInternalServerError, "login failed")
 		return
 	}
 
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *AuthHandler) Refresh(c *gin.Context) {
+	var req models.RefreshTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errorResponse(c, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	req.RefreshToken = strings.TrimSpace(req.RefreshToken)
+	if req.RefreshToken == "" {
+		errorResponse(c, http.StatusBadRequest, "refresh token is required")
+		return
+	}
+
+	response, err := h.authService.RefreshTokens(req.RefreshToken)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidCredentials) {
+			errorResponse(c, http.StatusUnauthorized, "invalid refresh token")
+			return
+		}
+		errorResponse(c, http.StatusUnauthorized, "invalid or expired refresh token")
+		return
+	}
 	c.JSON(http.StatusOK, response)
 }

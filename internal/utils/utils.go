@@ -46,14 +46,24 @@ func parseCSV(r io.Reader) ([]models.CreateStudentRequest, error) {
 			continue // header
 		}
 
-		year, _ := strconv.Atoi(safeCell(row, 2))
+		rawYear := safeCell(row, 2)
+		year, _ := strconv.Atoi(rawYear)
+		rawPRN := safeCell(row, 0)
+		rawDivision := safeCell(row, 3)
+		rawGuide := safeCell(row, 4)
 
 		students = append(students, models.CreateStudentRequest{
-			PRN:         safeCell(row, 0),
+			PRN:         rawPRN,
 			Name:        safeCell(row, 1),
-			GuideName:   safeCell(row, 4),
+			GuideName:   rawGuide,
 			PassingYear: year,
-			Division:    safeCell(row, 3),
+			Division:    rawDivision,
+			ProcessedRow: len(students) + 1,
+			SheetRow:     i + 1,
+			RawPRN:       rawPRN,
+			RawYear:      rawYear,
+			RawDivision:  rawDivision,
+			RawGuideName: rawGuide,
 		})
 	}
 
@@ -80,14 +90,24 @@ func parseExcel(r io.Reader) ([]models.CreateStudentRequest, error) {
 			continue
 		}
 
-		year, _ := strconv.Atoi(safeCell(row, 2))
+		rawYear := safeCell(row, 2)
+		year, _ := strconv.Atoi(rawYear)
+		rawPRN := safeCell(row, 0)
+		rawDivision := safeCell(row, 3)
+		rawGuide := safeCell(row, 4)
 
 		students = append(students, models.CreateStudentRequest{
-			PRN:         safeCell(row, 0),
+			PRN:         rawPRN,
 			Name:        safeCell(row, 1),
-			GuideName:   safeCell(row, 4),
+			GuideName:   rawGuide,
 			PassingYear: year,
-			Division:    safeCell(row, 3),
+			Division:    rawDivision,
+			ProcessedRow: len(students) + 1,
+			SheetRow:     i + 1,
+			RawPRN:       rawPRN,
+			RawYear:      rawYear,
+			RawDivision:  rawDivision,
+			RawGuideName: rawGuide,
 		})
 	}
 

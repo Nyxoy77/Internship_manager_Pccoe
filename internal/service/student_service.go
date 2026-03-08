@@ -3,6 +3,7 @@ package service
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -53,18 +54,19 @@ func (s *StudentService) GetStudentSummary(prn string) (*models.StudentSummaryRe
 	}
 
 	internshipQuery := `
-    SELECT
-        i.id,
-        i.organization,
-        i.description,
-        i.start_date,
-        i.end_date,
-        i.mode,
-        i.credits,
-        i.monthly_stipend,
-        i.status,
-        i.created_at,
-        i.approved_at,
+	    SELECT
+	        i.id,
+	        i.organization,
+	        i.description,
+	        i.start_date,
+	        i.end_date,
+	        i.mode,
+	        i.credits,
+	        i.monthly_stipend,
+	        i.status,
+	        i.workflow_status,
+	        i.created_at,
+	        i.approved_at,
         i.review_note,
         (c.id IS NOT NULL) AS has_certificate
     FROM internships i
@@ -92,11 +94,39 @@ func (s *StudentService) GetStudentSummary(prn string) (*models.StudentSummaryRe
 	return response, nil
 }
 
-// ListStudents returns students filtered by year and division with credits
-func (s *StudentService) ListStudents(passingYear *int, division string) ([]models.StudentListItem, error) {
-	// Build query with optional filters
+// ListStudents returns students filtered by lookup fields with pagination.
+func (s *StudentService) ListStudents(
+	page int,
+	pageSize int,
+	passingYear *int,
+	division string,
+	prn string,
+	name string,
+	guide string,
+) (*models.StudentListResponse, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	whereClause, args, argPos := buildStudentListWhereClause(passingYear, division, prn, name, guide)
+
+	countQuery := `SELECT COUNT(1) FROM students s` + whereClause
+	var total int
+	if err := s.db.Get(&total, countQuery, args...); err != nil {
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+
+	offset := (page - 1) * pageSize
+	dataArgs := append(args, pageSize, offset)
+
 	query := `
-        SELECT 
+        SELECT
             s.prn,
             s.name,
             s.guide_name,
@@ -105,38 +135,177 @@ func (s *StudentService) ListStudents(passingYear *int, division string) ([]mode
             COALESCE(SUM(CASE WHEN i.status = 'approved' AND i.credit_eligible = TRUE THEN i.credits ELSE 0 END), 0) as total_credits
         FROM students s
         LEFT JOIN internships i ON s.prn = i.student_prn
-    `
+    ` + whereClause + `
+        GROUP BY s.prn, s.name, s.guide_name, s.passing_year, s.division
+        ORDER BY s.prn
+        LIMIT $` + strconv.Itoa(argPos) + ` OFFSET $` + strconv.Itoa(argPos+1)
 
-	// Add WHERE clause for filters
+	var students []models.StudentListItem
+	if err := s.db.Select(&students, query, dataArgs...); err != nil {
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+
+	return &models.StudentListResponse{
+		Items:    students,
+		Page:     page,
+		PageSize: pageSize,
+		Total:    total,
+	}, nil
+}
+
+// ListStudentCreditReport returns student credit summary rows with filters and pagination.
+func (s *StudentService) ListStudentCreditReport(
+	page int,
+	pageSize int,
+	passingYear *int,
+	division string,
+	prn string,
+	name string,
+	guide string,
+	creditFilter string,
+) (*models.StudentListResponse, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	whereClause, args, _ := buildStudentListWhereClause(passingYear, division, prn, name, guide)
+	baseCTE := `
+		WITH credit_rows AS (
+			SELECT
+				s.prn,
+				s.name,
+				s.guide_name,
+				s.passing_year,
+				s.division,
+				COALESCE(SUM(CASE WHEN i.status = 'approved' AND i.credit_eligible = TRUE THEN i.credits ELSE 0 END), 0) as total_credits
+			FROM students s
+			LEFT JOIN internships i ON s.prn = i.student_prn
+			` + whereClause + `
+			GROUP BY s.prn, s.name, s.guide_name, s.passing_year, s.division
+		)
+	`
+
+	creditWhere := buildCreditFilterWhere(creditFilter)
+
+	countQuery := baseCTE + ` SELECT COUNT(1) FROM credit_rows ` + creditWhere
+	var total int
+	if err := s.db.Get(&total, countQuery, args...); err != nil {
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+
+	offset := (page - 1) * pageSize
+	dataArgs := append(args, pageSize, offset)
+	dataQuery := baseCTE + `
+		SELECT prn, name, guide_name, passing_year, division, total_credits
+		FROM credit_rows
+	` + creditWhere + `
+		ORDER BY prn
+		LIMIT $` + strconv.Itoa(len(args)+1) + ` OFFSET $` + strconv.Itoa(len(args)+2)
+
+	var students []models.StudentListItem
+	if err := s.db.Select(&students, dataQuery, dataArgs...); err != nil {
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+
+	return &models.StudentListResponse{
+		Items:    students,
+		Page:     page,
+		PageSize: pageSize,
+		Total:    total,
+	}, nil
+}
+
+func (s *StudentService) ListStudentCreditReportForExport(
+	passingYear *int,
+	division string,
+	prn string,
+	name string,
+	guide string,
+	creditFilter string,
+) ([]models.StudentListItem, error) {
+	whereClause, args, _ := buildStudentListWhereClause(passingYear, division, prn, name, guide)
+	baseCTE := `
+		WITH credit_rows AS (
+			SELECT
+				s.prn,
+				s.name,
+				s.guide_name,
+				s.passing_year,
+				s.division,
+				COALESCE(SUM(CASE WHEN i.status = 'approved' AND i.credit_eligible = TRUE THEN i.credits ELSE 0 END), 0) as total_credits
+			FROM students s
+			LEFT JOIN internships i ON s.prn = i.student_prn
+			` + whereClause + `
+			GROUP BY s.prn, s.name, s.guide_name, s.passing_year, s.division
+		)
+	`
+
+	query := baseCTE + `
+		SELECT prn, name, guide_name, passing_year, division, total_credits
+		FROM credit_rows
+	` + buildCreditFilterWhere(creditFilter) + `
+		ORDER BY prn
+	`
+
+	var students []models.StudentListItem
+	if err := s.db.Select(&students, query, args...); err != nil {
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+	return students, nil
+}
+
+func buildCreditFilterWhere(creditFilter string) string {
+	switch strings.ToLower(strings.TrimSpace(creditFilter)) {
+	case "zero":
+		return " WHERE total_credits = 0"
+	case "non_zero":
+		return " WHERE total_credits > 0"
+	default:
+		return ""
+	}
+}
+
+func buildStudentListWhereClause(passingYear *int, division, prn, name, guide string) (string, []interface{}, int) {
 	var conditions []string
 	var args []interface{}
 	argPos := 1
 
 	if passingYear != nil {
-		conditions = append(conditions, fmt.Sprintf("s.passing_year = $%d", argPos))
+		conditions = append(conditions, "s.passing_year = $"+strconv.Itoa(argPos))
 		args = append(args, *passingYear)
 		argPos++
 	}
-
-	if division != "" {
-		conditions = append(conditions, fmt.Sprintf("s.division = $%d", argPos))
-		args = append(args, division)
+	if strings.TrimSpace(division) != "" {
+		conditions = append(conditions, "LOWER(s.division) = LOWER($"+strconv.Itoa(argPos)+")")
+		args = append(args, strings.TrimSpace(division))
+		argPos++
+	}
+	if strings.TrimSpace(prn) != "" {
+		conditions = append(conditions, "LOWER(s.prn) LIKE LOWER($"+strconv.Itoa(argPos)+")")
+		args = append(args, "%"+strings.TrimSpace(prn)+"%")
+		argPos++
+	}
+	if strings.TrimSpace(name) != "" {
+		conditions = append(conditions, "LOWER(s.name) LIKE LOWER($"+strconv.Itoa(argPos)+")")
+		args = append(args, "%"+strings.TrimSpace(name)+"%")
+		argPos++
+	}
+	if strings.TrimSpace(guide) != "" {
+		conditions = append(conditions, "LOWER(s.guide_name) LIKE LOWER($"+strconv.Itoa(argPos)+")")
+		args = append(args, "%"+strings.TrimSpace(guide)+"%")
 		argPos++
 	}
 
-	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
+	if len(conditions) == 0 {
+		return "", args, argPos
 	}
-
-	query += " GROUP BY s.prn, s.name, s.guide_name, s.passing_year, s.division ORDER BY s.prn"
-
-	var students []models.StudentListItem
-	err := s.db.Select(&students, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("database error: %w", err)
-	}
-
-	return students, nil
+	return " WHERE " + strings.Join(conditions, " AND "), args, argPos
 }
 
 // StudentExists checks if a student with given PRN exists

@@ -10,8 +10,14 @@ type LoginRequest struct {
 
 // LoginResponse represents the login response
 type LoginResponse struct {
-    Token string   `json:"token"`
-    User  UserInfo `json:"user"`
+    Token        string   `json:"token"` // backward compatible alias of accessToken
+    AccessToken  string   `json:"accessToken"`
+    RefreshToken string   `json:"refreshToken"`
+    User         UserInfo `json:"user"`
+}
+
+type RefreshTokenRequest struct {
+    RefreshToken string `json:"refreshToken" binding:"required"`
 }
 
 // UserInfo represents user information returned in responses

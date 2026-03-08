@@ -15,16 +15,20 @@ import (
 )
 
 type AuthService struct {
-	db        *sqlx.DB
-	jwtSecret []byte
+	db              *sqlx.DB
+	jwtSecret       []byte
+	accessTokenTTL  time.Duration
+	refreshTokenTTL time.Duration
 }
 
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
-func NewAuthService(db *sqlx.DB, jwtSecret string) *AuthService {
+func NewAuthService(db *sqlx.DB, jwtSecret string, accessTokenTTL, refreshTokenTTL time.Duration) *AuthService {
 	return &AuthService{
-		db:        db,
-		jwtSecret: []byte(jwtSecret),
+		db:              db,
+		jwtSecret:       []byte(jwtSecret),
+		accessTokenTTL:  accessTokenTTL,
+		refreshTokenTTL: refreshTokenTTL,
 	}
 }
 
@@ -48,14 +52,20 @@ func (s *AuthService) Login(username, password string) (*models.LoginResponse, e
 	}
 
 	// Generate JWT token
-	token, err := s.generateJWT(user.ID, user.Role)
+	accessToken, err := s.generateJWT(user.ID, user.Role, "access", s.accessTokenTTL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate token: %w", err)
+	}
+	refreshToken, err := s.generateJWT(user.ID, user.Role, "refresh", s.refreshTokenTTL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
 	}
 
 	// Prepare response
 	response := &models.LoginResponse{
-		Token: token,
+		Token:        accessToken,
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
 		User: models.UserInfo{
 			ID:       strconv.Itoa(user.ID),
 			Username: user.Username,
@@ -68,11 +78,12 @@ func (s *AuthService) Login(username, password string) (*models.LoginResponse, e
 }
 
 // generateJWT creates a JWT token with user ID stored as string claim
-func (s *AuthService) generateJWT(userID int, role string) (string, error) {
+func (s *AuthService) generateJWT(userID int, role, tokenType string, ttl time.Duration) (string, error) {
 	claims := jwt.MapClaims{
-		"id":   strconv.Itoa(userID), // Store as string per spec
+		"id":   strconv.Itoa(userID),
 		"role": role,
-		"exp":  time.Now().Add(24 * time.Hour).Unix(),
+		"type": tokenType,
+		"exp":  time.Now().Add(ttl).Unix(),
 		"iat":  time.Now().Unix(),
 	}
 
@@ -86,7 +97,7 @@ func (s *AuthService) generateJWT(userID int, role string) (string, error) {
 }
 
 // ValidateToken validates JWT and returns user ID as int
-func (s *AuthService) ValidateToken(tokenString string) (int, string, error) {
+func (s *AuthService) validateTokenByType(tokenString, expectedType string) (int, string, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		// Verify signing method
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -124,6 +135,55 @@ func (s *AuthService) ValidateToken(tokenString string) (int, string, error) {
 	if !ok {
 		return 0, "", errors.New("invalid role in token")
 	}
+	tokenType, ok := claims["type"].(string)
+	if !ok {
+		return 0, "", errors.New("invalid token type")
+	}
+	if tokenType != expectedType {
+		return 0, "", errors.New("invalid token type for this endpoint")
+	}
 
 	return userID, role, nil
+}
+
+// ValidateToken validates access token and returns user ID as int
+func (s *AuthService) ValidateToken(tokenString string) (int, string, error) {
+	return s.validateTokenByType(tokenString, "access")
+}
+
+func (s *AuthService) RefreshTokens(refreshToken string) (*models.LoginResponse, error) {
+	userID, role, err := s.validateTokenByType(refreshToken, "refresh")
+	if err != nil {
+		return nil, err
+	}
+
+	var user models.User
+	query := `SELECT id, username, role, name FROM users WHERE id = $1`
+	if err := s.db.Get(&user, query, userID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrInvalidCredentials
+		}
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+
+	accessToken, err := s.generateJWT(user.ID, role, "access", s.accessTokenTTL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate access token: %w", err)
+	}
+	newRefreshToken, err := s.generateJWT(user.ID, role, "refresh", s.refreshTokenTTL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
+	}
+
+	return &models.LoginResponse{
+		Token:        accessToken,
+		AccessToken:  accessToken,
+		RefreshToken: newRefreshToken,
+		User: models.UserInfo{
+			ID:       strconv.Itoa(user.ID),
+			Username: user.Username,
+			Role:     user.Role,
+			Name:     user.Name,
+		},
+	}, nil
 }
