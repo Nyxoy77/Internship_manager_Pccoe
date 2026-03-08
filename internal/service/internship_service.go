@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,11 +26,16 @@ func NewInternshipService(db *sqlx.DB, studentService *StudentService) *Internsh
 func (s *InternshipService) CreateInternship(
 	req *models.CreateInternshipRequest,
 	createdBy int,
-) error {
+) (*models.CreateInternshipResponse, error) {
 
 	startDate, endDate, err := s.validateAndPrepareInternship(req)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	warnings, err := s.detectSubmissionWarnings(req.PRN, req.Organization, startDate, endDate)
+	if err != nil {
+		return nil, err
 	}
 
 	query := `
@@ -62,7 +68,14 @@ func (s *InternshipService) CreateInternship(
 		createdBy,
 	)
 
-	return err
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.CreateInternshipResponse{
+		Message:  "Internship created successfully",
+		Warnings: warnings,
+	}, nil
 }
 
 func isEmptyInternshipRow(req *models.CreateInternshipRequest) bool {
@@ -208,6 +221,23 @@ func (s *InternshipService) BatchCreateInternships(
 			continue
 		}
 
+		warnings, warnErr := s.detectSubmissionWarnings(req.PRN, req.Organization, startDate, endDate)
+		if warnErr != nil {
+			response.Failed++
+			response.Errors = append(response.Errors, models.BatchUploadError{
+				Row:   rowNum,
+				Error: "failed to evaluate submission warnings",
+			})
+			continue
+		}
+		if len(warnings) > 0 {
+			response.Warnings = append(response.Warnings, models.BatchUploadWarning{
+				Row:     rowNum,
+				Message: "potential conflict detected",
+				Items:   warnings,
+			})
+		}
+
 		_, err = tx.Exec(`
 			INSERT INTO internships (
 				student_prn,
@@ -263,6 +293,7 @@ func (s *InternshipService) BatchCreateInternships(
 func (s *InternshipService) ApproveInternship(
 	internshipID int,
 	approvedBy int,
+	reviewNote string,
 ) error {
 
 	tx, err := s.db.Beginx()
@@ -276,11 +307,12 @@ func (s *InternshipService) ApproveInternship(
 		UPDATE internships
 		SET status = 'approved',
 		    approved_by = $1,
-		    approved_at = NOW()
+		    approved_at = NOW(),
+		    review_note = NULLIF(TRIM($3), '')
 		WHERE id = $2
 		  AND status = 'pending'
 		RETURNING student_prn
-	`, approvedBy, internshipID)
+	`, approvedBy, internshipID, reviewNote)
 	if err != nil {
 		return fmt.Errorf("internship not found or already processed")
 	}
@@ -295,6 +327,7 @@ func (s *InternshipService) ApproveInternship(
 func (s *InternshipService) RejectInternship(
 	internshipID int,
 	approvedBy int,
+	reviewNote string,
 ) error {
 
 	tx, err := s.db.Beginx()
@@ -308,11 +341,12 @@ func (s *InternshipService) RejectInternship(
 		UPDATE internships
 		SET status = 'rejected',
 		    approved_by = $1,
-		    approved_at = NOW()
+		    approved_at = NOW(),
+		    review_note = NULLIF(TRIM($3), '')
 		WHERE id = $2
 		  AND status = 'pending'
 		RETURNING student_prn
-	`, approvedBy, internshipID)
+	`, approvedBy, internshipID, reviewNote)
 	if err != nil {
 		return fmt.Errorf("internship not found or already processed")
 	}
@@ -510,14 +544,133 @@ func (s *InternshipService) validateAndPrepareInternship(
 	return startDate, endDate, nil
 }
 
-// GetPendingInternships returns all pending internships
-func (s *InternshipService) GetPendingInternships() ([]models.InternshipWithStudentName, error) {
+func (s *InternshipService) detectSubmissionWarnings(prn, organization string, startDate, endDate time.Time) ([]string, error) {
+	var warnings []string
+
+	var overlapCount int
+	err := s.db.Get(&overlapCount, `
+		SELECT COUNT(1)
+		FROM internships
+		WHERE student_prn = $1
+		  AND status IN ('pending', 'approved')
+		  AND daterange(start_date, end_date, '[]') && daterange($2::date, $3::date, '[]')
+	`, prn, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	if overlapCount > 0 {
+		warnings = append(warnings, "date overlap with an existing pending/approved internship")
+	}
+
+	var duplicateCount int
+	err = s.db.Get(&duplicateCount, `
+		SELECT COUNT(1)
+		FROM internships
+		WHERE student_prn = $1
+		  AND status IN ('pending', 'approved')
+		  AND LOWER(TRIM(organization)) = LOWER(TRIM($2))
+		  AND start_date = $3::date
+		  AND end_date = $4::date
+	`, prn, organization, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	if duplicateCount > 0 {
+		warnings = append(warnings, "possible duplicate internship (same organization and date range)")
+	}
+
+	return warnings, nil
+}
+
+func (s *InternshipService) ListInternships(
+	page int,
+	pageSize int,
+	status string,
+	organization string,
+	guide string,
+	prn string,
+	dateFrom string,
+	dateTo string,
+	year *int,
+	division string,
+) (*models.InternshipListResponse, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	where := []string{"1=1"}
+	args := []interface{}{}
+	argPos := 1
+
+	if status != "" {
+		where = append(where, "i.status = $"+strconv.Itoa(argPos))
+		args = append(args, status)
+		argPos++
+	}
+	if organization != "" {
+		where = append(where, "LOWER(i.organization) LIKE LOWER($"+strconv.Itoa(argPos)+")")
+		args = append(args, "%"+strings.TrimSpace(organization)+"%")
+		argPos++
+	}
+	if guide != "" {
+		where = append(where, "LOWER(s.guide_name) LIKE LOWER($"+strconv.Itoa(argPos)+")")
+		args = append(args, "%"+strings.TrimSpace(guide)+"%")
+		argPos++
+	}
+	if prn != "" {
+		where = append(where, "LOWER(i.student_prn) LIKE LOWER($"+strconv.Itoa(argPos)+")")
+		args = append(args, "%"+strings.TrimSpace(prn)+"%")
+		argPos++
+	}
+	if dateFrom != "" {
+		where = append(where, "i.start_date >= $"+strconv.Itoa(argPos)+"::date")
+		args = append(args, dateFrom)
+		argPos++
+	}
+	if dateTo != "" {
+		where = append(where, "i.end_date <= $"+strconv.Itoa(argPos)+"::date")
+		args = append(args, dateTo)
+		argPos++
+	}
+	if year != nil {
+		where = append(where, "s.passing_year = $"+strconv.Itoa(argPos))
+		args = append(args, *year)
+		argPos++
+	}
+	if division != "" {
+		where = append(where, "LOWER(s.division) = LOWER($"+strconv.Itoa(argPos)+")")
+		args = append(args, strings.TrimSpace(division))
+		argPos++
+	}
+
+	whereClause := " WHERE " + strings.Join(where, " AND ")
+
+	countQuery := `
+		SELECT COUNT(1)
+		FROM internships i
+		JOIN students s ON s.prn = i.student_prn
+	` + whereClause
+
+	var total int
+	if err := s.db.Get(&total, countQuery, args...); err != nil {
+		return nil, fmt.Errorf("failed to count internships: %w", err)
+	}
+
+	offset := (page - 1) * pageSize
+	dataArgs := append(args, pageSize, offset)
 	query := `
-		SELECT 
+		SELECT
 			i.id,
 			i.student_prn,
 			i.organization,
 			i.description,
+			s.guide_name,
 			i.start_date,
 			i.end_date,
 			i.mode,
@@ -529,17 +682,149 @@ func (s *InternshipService) GetPendingInternships() ([]models.InternshipWithStud
 			i.created_at,
 			i.approved_by,
 			i.approved_at,
-			s.name AS student_name
+			i.review_note,
+			s.name AS student_name,
+			s.passing_year AS year,
+			s.division
 		FROM internships i
 		JOIN students s ON i.student_prn = s.prn
-		WHERE i.status = 'pending'
+	` + whereClause + `
 		ORDER BY i.created_at DESC
-	`
+		LIMIT $` + strconv.Itoa(argPos) + ` OFFSET $` + strconv.Itoa(argPos+1)
 
-	var internships []models.InternshipWithStudentName
-	if err := s.db.Select(&internships, query); err != nil {
-		return nil, fmt.Errorf("database error: %w", err)
+	var items []models.InternshipWithStudentName
+	if err := s.db.Select(&items, query, dataArgs...); err != nil {
+		return nil, fmt.Errorf("failed to list internships: %w", err)
 	}
 
-	return internships, nil
+	return &models.InternshipListResponse{
+		Items:    items,
+		Page:     page,
+		PageSize: pageSize,
+		Total:    total,
+	}, nil
+}
+
+func (s *InternshipService) BulkReviewInternships(req *models.BulkReviewRequest, approvedBy int) (*models.BulkReviewResponse, error) {
+	if !req.Confirm {
+		return nil, fmt.Errorf("bulk operation requires explicit confirmation")
+	}
+	if len(req.InternshipIDs) == 0 {
+		return nil, fmt.Errorf("no internship IDs provided")
+	}
+	if len(req.InternshipIDs) > 50 {
+		return nil, fmt.Errorf("bulk operation limit exceeded (max 50)")
+	}
+
+	ids := uniqueInts(req.InternshipIDs)
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("no valid internship IDs provided")
+	}
+
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	query, args, err := sqlx.In(`
+		SELECT id, student_prn
+		FROM internships
+		WHERE id IN (?)
+		  AND status = 'pending'
+		FOR UPDATE
+	`, ids)
+	if err != nil {
+		return nil, err
+	}
+	query = tx.Rebind(query)
+
+	type row struct {
+		ID  int    `db:"id"`
+		PRN string `db:"student_prn"`
+	}
+	var rows []row
+	if err := tx.Select(&rows, query, args...); err != nil {
+		return nil, err
+	}
+	if len(rows) != len(ids) {
+		return nil, fmt.Errorf("some internships are missing or already processed")
+	}
+
+	status := "approved"
+	if req.Action == "reject" {
+		status = "rejected"
+	}
+
+	updateQuery, updateArgs, err := sqlx.In(`
+		UPDATE internships
+		SET status = ?,
+		    approved_by = ?,
+		    approved_at = NOW(),
+		    review_note = NULLIF(TRIM(?), '')
+		WHERE id IN (?)
+		  AND status = 'pending'
+	`, status, approvedBy, req.ReviewNote, ids)
+	if err != nil {
+		return nil, err
+	}
+	updateQuery = tx.Rebind(updateQuery)
+
+	res, err := tx.Exec(updateQuery, updateArgs...)
+	if err != nil {
+		return nil, err
+	}
+	affected, _ := res.RowsAffected()
+	if int(affected) != len(ids) {
+		return nil, fmt.Errorf("bulk operation aborted because records changed during processing")
+	}
+
+	prnSet := map[string]struct{}{}
+	for _, r := range rows {
+		prnSet[r.PRN] = struct{}{}
+	}
+	for studentPRN := range prnSet {
+		if err := s.recalculateCreditEligibilityTx(tx, studentPRN); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	actionLabel := "Approved"
+	if req.Action == "reject" {
+		actionLabel = "Rejected"
+	}
+
+	return &models.BulkReviewResponse{
+		Message:       fmt.Sprintf("%s operation completed", actionLabel),
+		ProcessedRows: len(ids),
+	}, nil
+}
+
+func uniqueInts(input []int) []int {
+	seen := make(map[int]struct{}, len(input))
+	out := make([]int, 0, len(input))
+	for _, id := range input {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// GetPendingInternships returns all pending internships
+func (s *InternshipService) GetPendingInternships() ([]models.InternshipWithStudentName, error) {
+	resp, err := s.ListInternships(1, 1000, "pending", "", "", "", "", "", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
 }

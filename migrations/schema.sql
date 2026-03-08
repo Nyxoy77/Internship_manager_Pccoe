@@ -41,6 +41,7 @@ CREATE TABLE internships (
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   approved_by INT REFERENCES users(id),
   approved_at TIMESTAMP,
+  review_note TEXT,
   credit_eligible BOOLEAN NOT NULL DEFAULT TRUE,
   CHECK (end_date >= start_date)
 );

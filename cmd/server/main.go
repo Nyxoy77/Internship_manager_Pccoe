@@ -78,6 +78,7 @@ func main() {
 		{
 			protected.GET("/student/:prn/summary", studentHandler.GetStudentSummary)
 			protected.GET("/students", studentHandler.ListStudents)
+			protected.GET("/internships", internshipHandler.ListInternships)
 			protected.POST("/changePassword", userHandler.ChangePassword)
 			managerRoutes := protected.Group("")
 			managerRoutes.Use(middleware.RequireRole("manager"))
@@ -93,6 +94,7 @@ func main() {
 			adminRoutes.Use(middleware.RequireRole("admin"))
 			{
 				adminRoutes.GET("/internships/pending", internshipHandler.GetPendingInternships)
+				adminRoutes.POST("/internships/bulk-review", internshipHandler.BulkReviewInternships)
 				adminRoutes.POST("/internship/:id/approve", internshipHandler.ApproveInternship)
 				adminRoutes.POST("/internship/:id/reject", internshipHandler.RejectInternship)
 				adminRoutes.POST("/createStudent", studentAdminHandler.CreateStudent)

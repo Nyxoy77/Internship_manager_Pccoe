@@ -1,0 +1,2 @@
+ALTER TABLE internships
+ADD COLUMN IF NOT EXISTS review_note TEXT;

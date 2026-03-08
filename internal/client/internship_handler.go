@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -47,7 +48,7 @@ func (h *InternshipHandler) CreateInternship(c *gin.Context) {
 		return
 	}
 
-	err := h.internshipService.CreateInternship(&req, createdBy)
+	response, err := h.internshipService.CreateInternship(&req, createdBy)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -62,7 +63,7 @@ func (h *InternshipHandler) CreateInternship(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"message": "Internship created successfully"})
+	c.JSON(http.StatusCreated, response)
 }
 
 // BatchUploadInternships handles CSV/XLSX file upload [web:10]
@@ -391,7 +392,15 @@ func (h *InternshipHandler) ApproveInternship(c *gin.Context) {
 		return
 	}
 
-	err = h.internshipService.ApproveInternship(internshipID, approvedBy)
+	var req models.ApprovalRequest
+	if c.Request.ContentLength > 0 {
+		if bindErr := c.ShouldBindJSON(&req); bindErr != nil && !errors.Is(bindErr, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+			return
+		}
+	}
+
+	err = h.internshipService.ApproveInternship(internshipID, approvedBy, req.ReviewNote)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -427,7 +436,15 @@ func (h *InternshipHandler) RejectInternship(c *gin.Context) {
 		return
 	}
 
-	err = h.internshipService.RejectInternship(internshipID, approvedBy)
+	var req models.ApprovalRequest
+	if c.Request.ContentLength > 0 {
+		if bindErr := c.ShouldBindJSON(&req); bindErr != nil && !errors.Is(bindErr, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+			return
+		}
+	}
+
+	err = h.internshipService.RejectInternship(internshipID, approvedBy, req.ReviewNote)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -438,4 +455,82 @@ func (h *InternshipHandler) RejectInternship(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Internship rejected successfully"})
+}
+
+func (h *InternshipHandler) ListInternships(c *gin.Context) {
+	page := 1
+	pageSize := 10
+	var year *int
+
+	if q := c.Query("page"); q != "" {
+		if parsed, err := strconv.Atoi(q); err == nil {
+			page = parsed
+		}
+	}
+	if q := c.Query("pageSize"); q != "" {
+		if parsed, err := strconv.Atoi(q); err == nil {
+			pageSize = parsed
+		}
+	}
+	if q := c.Query("year"); q != "" {
+		parsed, err := strconv.Atoi(q)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid year parameter"})
+			return
+		}
+		year = &parsed
+	}
+
+	resp, err := h.internshipService.ListInternships(
+		page,
+		pageSize,
+		c.Query("status"),
+		c.Query("organization"),
+		c.Query("guide"),
+		c.Query("prn"),
+		c.Query("dateFrom"),
+		c.Query("dateTo"),
+		year,
+		c.Query("division"),
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch internships"})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *InternshipHandler) BulkReviewInternships(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+	approvedBy, ok := userID.(int)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	var req models.BulkReviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		return
+	}
+
+	resp, err := h.internshipService.BulkReviewInternships(&req, approvedBy)
+	if err != nil {
+		if strings.Contains(err.Error(), "confirmation") ||
+			strings.Contains(err.Error(), "limit") ||
+			strings.Contains(err.Error(), "missing") ||
+			strings.Contains(err.Error(), "provided") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Bulk review failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
 }

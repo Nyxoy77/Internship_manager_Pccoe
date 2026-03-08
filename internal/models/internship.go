@@ -22,6 +22,7 @@ type Internship struct {
 	StudentPRN      string     `db:"student_prn" json:"studentPrn"`
 	Organization    string     `db:"organization" json:"organization"`
 	Description     *string    `db:"description" json:"description,omitempty"`
+	GuideName       string     `db:"guide_name" json:"guideName"`
 	StartDate       time.Time  `db:"start_date" json:"startDate"`
 	EndDate         time.Time  `db:"end_date" json:"endDate"`
 	Mode            string     `db:"mode" json:"mode"`
@@ -33,20 +34,29 @@ type Internship struct {
 	CreatedAt       time.Time  `db:"created_at" json:"createdAt"`
 	ApprovedBy      *int       `db:"approved_by" json:"approvedBy,omitempty"`
 	ApprovedAt      *time.Time `db:"approved_at" json:"approvedAt,omitempty"`
+	ReviewNote      *string    `db:"review_note" json:"reviewNote,omitempty"`
 }
 
 // InternshipWithStudentName extends Internship with student name for display
 type InternshipWithStudentName struct {
 	Internship
 	StudentName string `db:"student_name" json:"studentName"`
+	Year        int    `db:"year" json:"year"`
+	Division    string `db:"division" json:"division"`
+}
+
+type CreateInternshipResponse struct {
+	Message  string   `json:"message"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // BatchUploadResponse represents the response for batch upload
 type BatchUploadResponse struct {
-	TotalRows int                `json:"totalRows"`
-	Inserted  int                `json:"inserted"`
-	Failed    int                `json:"failed"`
-	Errors    []BatchUploadError `json:"errors"`
+	TotalRows int                  `json:"totalRows"`
+	Inserted  int                  `json:"inserted"`
+	Failed    int                  `json:"failed"`
+	Errors    []BatchUploadError   `json:"errors"`
+	Warnings  []BatchUploadWarning `json:"warnings,omitempty"`
 }
 
 // BatchUploadError represents an error in batch upload
@@ -55,7 +65,32 @@ type BatchUploadError struct {
 	Error string `json:"error"`
 }
 
+type BatchUploadWarning struct {
+	Row     int      `json:"row"`
+	Message string   `json:"message"`
+	Items   []string `json:"items,omitempty"`
+}
+
 // ApprovalRequest represents approval/rejection action
 type ApprovalRequest struct {
-	// No body needed, action determined by endpoint
+	ReviewNote string `json:"reviewNote"`
+}
+
+type BulkReviewRequest struct {
+	InternshipIDs []int  `json:"internshipIds" binding:"required,min=1"`
+	Action        string `json:"action" binding:"required,oneof=approve reject"`
+	ReviewNote    string `json:"reviewNote"`
+	Confirm       bool   `json:"confirm"`
+}
+
+type BulkReviewResponse struct {
+	Message       string `json:"message"`
+	ProcessedRows int    `json:"processedRows"`
+}
+
+type InternshipListResponse struct {
+	Items    []InternshipWithStudentName `json:"items"`
+	Page     int                         `json:"page"`
+	PageSize int                         `json:"pageSize"`
+	Total    int                         `json:"total"`
 }

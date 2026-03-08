@@ -65,6 +65,7 @@ func (s *StudentService) GetStudentSummary(prn string) (*models.StudentSummaryRe
         i.status,
         i.created_at,
         i.approved_at,
+        i.review_note,
         (c.id IS NOT NULL) AS has_certificate
     FROM internships i
     LEFT JOIN certificates c
