@@ -6,6 +6,7 @@ import "time"
 type Student struct {
 	PRN       string    `db:"prn" json:"prn"`
 	Name      string    `db:"name" json:"name"`
+	GuideName string    `db:"guide_name" json:"guideName"`
 	Year      int       `db:"year" json:"year"`
 	Division  string    `db:"division" json:"division"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
@@ -15,6 +16,7 @@ type Student struct {
 type StudentSummaryResponse struct {
 	PRN          string                       `json:"prn"`
 	Name         string                       `json:"name"`
+	GuideName    string                       `json:"guideName"`
 	Year         int                          `json:"year"`
 	Division     string                       `json:"division"`
 	TotalCredits int                          `json:"totalCredits"`
@@ -25,6 +27,7 @@ type StudentSummaryResponse struct {
 type StudentListItem struct {
 	PRN          string `json:"prn" db:"prn"`
 	Name         string `json:"name" db:"name"`
+	GuideName    string `json:"guideName" db:"guide_name"`
 	Year         int    `json:"year" db:"passing_year"`
 	Division     string `json:"division" db:"division"`
 	TotalCredits int    `json:"totalCredits" db:"total_credits"`

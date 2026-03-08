@@ -80,11 +80,14 @@ func (h *InternshipHandler) BatchUploadInternships(c *gin.Context) {
 		return
 	}
 
-	// Get uploaded file
+	// Get uploaded file (support both "file" and legacy "File")
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "File is required"})
-		return
+		file, header, err = c.Request.FormFile("File")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "File is required"})
+			return
+		}
 	}
 	defer file.Close()
 
@@ -113,7 +116,57 @@ func (h *InternshipHandler) BatchUploadInternships(c *gin.Context) {
 }
 
 // parseCSV parses CSV file and returns internship requests
+// func (h *InternshipHandler) parseCSV(file io.Reader) ([]models.CreateInternshipRequest, error) {
+// 	reader := csv.NewReader(file)
+// 	records, err := reader.ReadAll()
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	if len(records) < 2 {
+// 		return nil, fmt.Errorf("file must contain header and at least one data row")
+// 	}
+
+// 	// Skip header row
+// 	var requests []models.CreateInternshipRequest
+// 	for i := 1; i < len(records); i++ {
+// 		record := records[i]
+// 		if len(record) < 6 {
+// 			continue
+// 		}
+
+// 		credits, _ := strconv.Atoi(record[5])
+// 		raw := strings.TrimSpace(record[7])
+
+// 		stipend, err := strconv.ParseFloat(raw, 64)
+// 		if err != nil {
+// 			return nil, fmt.Errorf("invalid stipend value '%s'", raw)
+// 		}
+
+// 		// Intentionally ignored the student name as it is not required for updation. Prn forms single source of truth
+// 		req := models.CreateInternshipRequest{
+// 			PRN:            strings.TrimSpace(record[0]),
+// 			Organization:   strings.TrimSpace(record[2]),
+// 			StartDate:      strings.TrimSpace(record[3]),
+// 			EndDate:        strings.TrimSpace(record[4]),
+// 			Credits:        credits,
+// 			Mode:           strings.TrimSpace(record[6]),
+// 			MonthlyStipend: stipend,
+// 			Description:    strings.TrimSpace(record[8]),
+// 		}
+
+// 		// if len(record) > 6 {
+// 		// 	req.Description = strings.TrimSpace(record[6])
+// 		// }
+
+// 		requests = append(requests, req)
+// 	}
+
+// 	return requests, nil
+// }
+
 func (h *InternshipHandler) parseCSV(file io.Reader) ([]models.CreateInternshipRequest, error) {
+
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
 	if err != nil {
@@ -124,37 +177,32 @@ func (h *InternshipHandler) parseCSV(file io.Reader) ([]models.CreateInternshipR
 		return nil, fmt.Errorf("file must contain header and at least one data row")
 	}
 
-	// Skip header row
 	var requests []models.CreateInternshipRequest
+
 	for i := 1; i < len(records); i++ {
 		record := records[i]
-		if len(record) < 6 {
+
+		if len(record) == 0 {
 			continue
 		}
 
-		credits, _ := strconv.Atoi(record[5])
-		raw := strings.TrimSpace(record[7])
+		credits, _ := strconv.Atoi(safeGet(record, 5))
 
-		stipend, err := strconv.ParseFloat(raw, 64)
+		stipend, err := normalizeStipend(safeGet(record, 7))
 		if err != nil {
-			return nil, fmt.Errorf("invalid stipend value '%s'", raw)
+			return nil, fmt.Errorf("invalid stipend at row %d", i+1)
 		}
 
-		// Intentionally ignored the student name as it is not required for updation. Prn forms single source of truth
 		req := models.CreateInternshipRequest{
-			PRN:            strings.TrimSpace(record[0]),
-			Organization:   strings.TrimSpace(record[2]),
-			StartDate:      strings.TrimSpace(record[3]),
-			EndDate:        strings.TrimSpace(record[4]),
+			PRN:            safeGet(record, 0),
+			Organization:   safeGet(record, 2),
+			StartDate:      safeGet(record, 3),
+			EndDate:        safeGet(record, 4),
 			Credits:        credits,
-			Mode:           strings.TrimSpace(record[6]),
+			Mode:           normalizeMode(safeGet(record, 6)),
 			MonthlyStipend: stipend,
-			Description:    strings.TrimSpace(record[8]),
+			Description:    safeGet(record, 8),
 		}
-
-		// if len(record) > 6 {
-		// 	req.Description = strings.TrimSpace(record[6])
-		// }
 
 		requests = append(requests, req)
 	}
@@ -162,25 +210,109 @@ func (h *InternshipHandler) parseCSV(file io.Reader) ([]models.CreateInternshipR
 	return requests, nil
 }
 
+func safeGet(row []string, index int) string {
+	if index >= len(row) {
+		return ""
+	}
+	return strings.TrimSpace(row[index])
+}
+
+func normalizeMode(mode string) string {
+	return strings.ToLower(strings.TrimSpace(mode))
+}
+
+func normalizeStipend(raw string) (float64, error) {
+	clean := strings.TrimSpace(raw)
+	clean = strings.ReplaceAll(clean, "/-", "")
+	clean = strings.ReplaceAll(clean, ",", "")
+	if clean == "" {
+		return 0, nil
+	}
+	return strconv.ParseFloat(clean, 64)
+}
+
 // parseXLSX parses Excel file and returns internship requests
+// func (h *InternshipHandler) parseXLSX(file io.Reader) ([]models.CreateInternshipRequest, error) {
+// 	// Read file into memory
+// 	data, err := io.ReadAll(file)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	// Open Excel file
+// 	f, err := excelize.OpenReader(strings.NewReader(string(data)))
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer f.Close()
+
+// 	// Get first sheet
+// 	sheets := f.GetSheetList()
+// 	if len(sheets) == 0 {
+// 		return nil, fmt.Errorf("no sheets found in Excel file")
+// 	}
+
+// 	rows, err := f.GetRows(sheets[0])
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	if len(rows) < 2 {
+// 		return nil, fmt.Errorf("file must contain header and at least one data row")
+// 	}
+
+// 	// Skip header row
+// 	var requests []models.CreateInternshipRequest
+// 	for i := 1; i < len(rows); i++ {
+// 		row := rows[i]
+// 		if len(row) < 6 {
+// 			continue
+// 		}
+
+// 		credits, _ := strconv.Atoi(row[5])
+// 		raw := strings.TrimSpace(row[7])
+
+// 		stipend, err := strconv.ParseFloat(raw, 64)
+// 		if err != nil {
+// 			return nil, fmt.Errorf("invalid stipend value '%s'", raw)
+// 		}
+// 		req := models.CreateInternshipRequest{
+// 			PRN:            strings.TrimSpace(row[0]),
+// 			Organization:   strings.TrimSpace(row[2]),
+// 			StartDate:      strings.TrimSpace(row[3]),
+// 			EndDate:        strings.TrimSpace(row[4]),
+// 			Credits:        credits,
+// 			Mode:           strings.TrimSpace(row[6]),
+// 			MonthlyStipend: stipend,
+// 			Description:    strings.TrimSpace(row[8]),
+// 		}
+
+// 		// if len(row) > 6 {
+// 		// 	req.Description = strings.TrimSpace(row[6])
+// 		// }
+
+// 		requests = append(requests, req)
+// 	}
+
+// 	return requests, nil
+// }
+
 func (h *InternshipHandler) parseXLSX(file io.Reader) ([]models.CreateInternshipRequest, error) {
-	// Read file into memory
+
 	data, err := io.ReadAll(file)
 	if err != nil {
 		return nil, err
 	}
 
-	// Open Excel file
 	f, err := excelize.OpenReader(strings.NewReader(string(data)))
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	// Get first sheet
 	sheets := f.GetSheetList()
 	if len(sheets) == 0 {
-		return nil, fmt.Errorf("no sheets found in Excel file")
+		return nil, fmt.Errorf("no sheets found")
 	}
 
 	rows, err := f.GetRows(sheets[0])
@@ -192,35 +324,32 @@ func (h *InternshipHandler) parseXLSX(file io.Reader) ([]models.CreateInternship
 		return nil, fmt.Errorf("file must contain header and at least one data row")
 	}
 
-	// Skip header row
 	var requests []models.CreateInternshipRequest
+
 	for i := 1; i < len(rows); i++ {
 		row := rows[i]
-		if len(row) < 6 {
+
+		if len(row) == 0 {
 			continue
 		}
 
-		credits, _ := strconv.Atoi(row[5])
-		raw := strings.TrimSpace(row[7])
+		credits, _ := strconv.Atoi(safeGet(row, 5))
 
-		stipend, err := strconv.ParseFloat(raw, 64)
+		stipend, err := normalizeStipend(safeGet(row, 7))
 		if err != nil {
-			return nil, fmt.Errorf("invalid stipend value '%s'", raw)
-		}
-		req := models.CreateInternshipRequest{
-			PRN:            strings.TrimSpace(row[0]),
-			Organization:   strings.TrimSpace(row[2]),
-			StartDate:      strings.TrimSpace(row[3]),
-			EndDate:        strings.TrimSpace(row[4]),
-			Credits:        credits,
-			Mode:           strings.TrimSpace(row[6]),
-			MonthlyStipend: stipend,
-			Description:    strings.TrimSpace(row[8]),
+			return nil, fmt.Errorf("invalid stipend at row %d", i+1)
 		}
 
-		// if len(row) > 6 {
-		// 	req.Description = strings.TrimSpace(row[6])
-		// }
+		req := models.CreateInternshipRequest{
+			PRN:            safeGet(row, 0),
+			Organization:   safeGet(row, 2),
+			StartDate:      safeGet(row, 3),
+			EndDate:        safeGet(row, 4),
+			Credits:        credits,
+			Mode:           normalizeMode(safeGet(row, 6)),
+			MonthlyStipend: stipend,
+			Description:    safeGet(row, 8),
+		}
 
 		requests = append(requests, req)
 	}

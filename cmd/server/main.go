@@ -6,7 +6,6 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/yourusername/student-internship-manager/internal/client"
 	"github.com/yourusername/student-internship-manager/internal/config"
@@ -18,9 +17,6 @@ import (
 
 func main() {
 	// Load configuration
-	hash, _ := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
-	fmt.Println(string(hash))
-
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)

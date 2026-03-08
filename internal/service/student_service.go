@@ -25,18 +25,20 @@ func (s *StudentService) GetStudentSummary(prn string) (*models.StudentSummaryRe
         SELECT 
             s.prn,
             s.name,
+            s.guide_name,
             s.passing_year,
             s.division,
             COALESCE(SUM(CASE WHEN i.status = 'approved' AND i.credit_eligible = TRUE THEN i.credits ELSE 0 END), 0) as total_credits
         FROM students s
         LEFT JOIN internships i ON s.prn = i.student_prn
         WHERE s.prn = $1
-        GROUP BY s.prn, s.name, s.passing_year, s.division
+        GROUP BY s.prn, s.name, s.guide_name, s.passing_year, s.division
     `
 
 	var result struct {
 		PRN          string `db:"prn"`
 		Name         string `db:"name"`
+		GuideName    string `db:"guide_name"`
 		PassingYear  int    `db:"passing_year"`
 		Division     string `db:"division"`
 		TotalCredits int    `db:"total_credits"`
@@ -79,6 +81,7 @@ func (s *StudentService) GetStudentSummary(prn string) (*models.StudentSummaryRe
 	response := &models.StudentSummaryResponse{
 		PRN:          result.PRN,
 		Name:         result.Name,
+		GuideName:    result.GuideName,
 		Year:         result.PassingYear,
 		Division:     result.Division,
 		TotalCredits: result.TotalCredits,
@@ -95,6 +98,7 @@ func (s *StudentService) ListStudents(passingYear *int, division string) ([]mode
         SELECT 
             s.prn,
             s.name,
+            s.guide_name,
             s.passing_year,
             s.division,
             COALESCE(SUM(CASE WHEN i.status = 'approved' AND i.credit_eligible = TRUE THEN i.credits ELSE 0 END), 0) as total_credits
@@ -123,7 +127,7 @@ func (s *StudentService) ListStudents(passingYear *int, division string) ([]mode
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	query += " GROUP BY s.prn, s.name, s.passing_year, s.division ORDER BY s.prn"
+	query += " GROUP BY s.prn, s.name, s.guide_name, s.passing_year, s.division ORDER BY s.prn"
 
 	var students []models.StudentListItem
 	err := s.db.Select(&students, query, args...)

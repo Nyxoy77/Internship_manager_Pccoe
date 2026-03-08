@@ -23,20 +23,22 @@ func NewAdminService(db *sqlx.DB) *AdminService {
 func (s *AdminService) CreateStudent(req *models.CreateStudentRequest) error {
 
 	req.Division = strings.ToUpper(req.Division)
+	req.GuideName = strings.TrimSpace(req.GuideName)
 
 	if req.PassingYear < 2000 {
 		return fmt.Errorf("invalid passing year")
 	}
 
 	query := `
-		INSERT INTO students (prn, name, passing_year, division)
-		VALUES ($1,$2,$3,$4)
+		INSERT INTO students (prn, name, guide_name, passing_year, division)
+		VALUES ($1,$2,$3,$4,$5)
 	`
 
 	_, err := s.db.Exec(
 		query,
 		req.PRN,
 		req.Name,
+		req.GuideName,
 		req.PassingYear,
 		req.Division,
 	)
@@ -78,6 +80,7 @@ func (s *AdminService) BatchCreateStudents(
 		rowNum := i + 1
 		req.PRN = strings.TrimSpace(req.PRN)
 		req.Name = strings.TrimSpace(req.Name)
+		req.GuideName = strings.TrimSpace(req.GuideName)
 		req.Division = strings.ToUpper(strings.TrimSpace(req.Division))
 
 		if req.PRN == "" || req.Name == "" {
@@ -90,9 +93,9 @@ func (s *AdminService) BatchCreateStudents(
 		}
 
 		_, err := tx.Exec(`
-			INSERT INTO students (prn, name, passing_year, division)
-			VALUES ($1,$2,$3,$4)
-		`, req.PRN, req.Name, req.PassingYear, req.Division)
+			INSERT INTO students (prn, name, guide_name, passing_year, division)
+			VALUES ($1,$2,$3,$4,$5)
+		`, req.PRN, req.Name, req.GuideName, req.PassingYear, req.Division)
 
 		if err != nil {
 			resp.Errors = append(resp.Errors, models.BatchUploadError{

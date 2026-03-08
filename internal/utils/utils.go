@@ -46,13 +46,14 @@ func parseCSV(r io.Reader) ([]models.CreateStudentRequest, error) {
 			continue // header
 		}
 
-		year, _ := strconv.Atoi(row[2])
+		year, _ := strconv.Atoi(safeCell(row, 2))
 
 		students = append(students, models.CreateStudentRequest{
-			PRN:         row[0],
-			Name:        row[1],
+			PRN:         safeCell(row, 0),
+			Name:        safeCell(row, 1),
+			GuideName:   safeCell(row, 4),
 			PassingYear: year,
-			Division:    row[3],
+			Division:    safeCell(row, 3),
 		})
 	}
 
@@ -79,15 +80,23 @@ func parseExcel(r io.Reader) ([]models.CreateStudentRequest, error) {
 			continue
 		}
 
-		year, _ := strconv.Atoi(row[2])
+		year, _ := strconv.Atoi(safeCell(row, 2))
 
 		students = append(students, models.CreateStudentRequest{
-			PRN:         row[0],
-			Name:        row[1],
+			PRN:         safeCell(row, 0),
+			Name:        safeCell(row, 1),
+			GuideName:   safeCell(row, 4),
 			PassingYear: year,
-			Division:    row[3],
+			Division:    safeCell(row, 3),
 		})
 	}
 
 	return students, nil
+}
+
+func safeCell(row []string, idx int) string {
+	if idx >= len(row) {
+		return ""
+	}
+	return strings.TrimSpace(row[idx])
 }

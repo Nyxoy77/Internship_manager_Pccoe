@@ -65,6 +65,105 @@ func (s *InternshipService) CreateInternship(
 	return err
 }
 
+func isEmptyInternshipRow(req *models.CreateInternshipRequest) bool {
+	return strings.TrimSpace(req.Organization) == "" &&
+		strings.TrimSpace(req.StartDate) == "" &&
+		strings.TrimSpace(req.EndDate) == "" &&
+		req.Credits == 0 &&
+		strings.TrimSpace(req.Mode) == "" &&
+		req.MonthlyStipend == 0
+}
+
+// func (s *InternshipService) BatchCreateInternships(
+// 	requests []models.CreateInternshipRequest,
+// 	createdBy int,
+// ) *models.BatchUploadResponse {
+
+// 	response := &models.BatchUploadResponse{
+// 		TotalRows: len(requests),
+// 	}
+
+// 	tx, err := s.db.Beginx()
+// 	if err != nil {
+// 		response.Failed = len(requests)
+// 		response.Errors = append(response.Errors, models.BatchUploadError{
+// 			Row:   0,
+// 			Error: "failed to start database transaction",
+// 		})
+// 		return response
+// 	}
+// 	defer tx.Rollback()
+
+// 	for i, req := range requests {
+// 		rowNum := i + 1
+
+// 		// sanitization
+// 		req.PRN = strings.TrimSpace(req.PRN)
+// 		req.Organization = strings.TrimSpace(req.Organization)
+// 		req.Description = strings.TrimSpace(req.Description)
+// 		req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
+
+// 		startDate, endDate, err := s.validateAndPrepareInternship(&req)
+// 		if err != nil {
+// 			response.Failed = len(requests)
+// 			response.Errors = append(response.Errors, models.BatchUploadError{
+// 				Row:   rowNum,
+// 				Error: err.Error(),
+// 			})
+// 			return response
+// 		}
+
+// 		_, err = tx.Exec(`
+// 			INSERT INTO internships (
+// 				student_prn,
+// 				organization,
+// 				description,
+// 				start_date,
+// 				end_date,
+// 				mode,
+// 				credits,
+// 				monthly_stipend,
+// 				status,
+// 				credit_eligible,
+// 				created_by
+// 			)
+// 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',FALSE,$9)
+// 		`,
+// 			req.PRN,
+// 			req.Organization,
+// 			req.Description,
+// 			startDate,
+// 			endDate,
+// 			req.Mode,
+// 			req.Credits,
+// 			req.MonthlyStipend,
+// 			createdBy,
+// 		)
+
+// 		if err != nil {
+// 			response.Failed = len(requests)
+// 			response.Errors = append(response.Errors, models.BatchUploadError{
+// 				Row:   rowNum,
+// 				Error: "database insert failed",
+// 			})
+// 			return response
+// 		}
+
+// 		response.Inserted++
+// 	}
+
+// 	if err := tx.Commit(); err != nil {
+// 		response.Failed = len(requests)
+// 		response.Inserted = 0
+// 		response.Errors = append(response.Errors, models.BatchUploadError{
+// 			Row:   0,
+// 			Error: "failed to commit transaction",
+// 		})
+// 	}
+
+// 	return response
+// }
+
 func (s *InternshipService) BatchCreateInternships(
 	requests []models.CreateInternshipRequest,
 	createdBy int,
@@ -88,20 +187,25 @@ func (s *InternshipService) BatchCreateInternships(
 	for i, req := range requests {
 		rowNum := i + 1
 
-		// sanitization
+		// Sanitization
 		req.PRN = strings.TrimSpace(req.PRN)
 		req.Organization = strings.TrimSpace(req.Organization)
 		req.Description = strings.TrimSpace(req.Description)
 		req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
 
+		// 🚀 Skip completely empty internship rows
+		if isEmptyInternshipRow(&req) {
+			continue
+		}
+
 		startDate, endDate, err := s.validateAndPrepareInternship(&req)
 		if err != nil {
-			response.Failed = len(requests)
+			response.Failed++
 			response.Errors = append(response.Errors, models.BatchUploadError{
 				Row:   rowNum,
 				Error: err.Error(),
 			})
-			return response
+			continue
 		}
 
 		_, err = tx.Exec(`
@@ -132,20 +236,21 @@ func (s *InternshipService) BatchCreateInternships(
 		)
 
 		if err != nil {
-			response.Failed = len(requests)
+			response.Failed++
 			response.Errors = append(response.Errors, models.BatchUploadError{
 				Row:   rowNum,
 				Error: "database insert failed",
 			})
-			return response
+			continue
 		}
 
 		response.Inserted++
 	}
 
+	// Commit whatever was valid
 	if err := tx.Commit(); err != nil {
-		response.Failed = len(requests)
 		response.Inserted = 0
+		response.Failed = len(requests)
 		response.Errors = append(response.Errors, models.BatchUploadError{
 			Row:   0,
 			Error: "failed to commit transaction",
@@ -296,6 +401,49 @@ func (s *InternshipService) recalculateCreditEligibilityTx(tx *sqlx.Tx, prn stri
 	return nil
 }
 
+// func (s *InternshipService) validateAndPrepareInternship(
+// 	req *models.CreateInternshipRequest,
+// ) (time.Time, time.Time, error) {
+
+// 	exists, err := s.studentService.StudentExists(req.PRN)
+// 	if err != nil {
+// 		return time.Time{}, time.Time{}, err
+// 	}
+// 	if !exists {
+// 		return time.Time{}, time.Time{}, fmt.Errorf("student with PRN %s not found", req.PRN)
+// 	}
+
+// 	startDate, err := time.Parse("2006-01-02", req.StartDate)
+// 	if err != nil {
+// 		return time.Time{}, time.Time{}, fmt.Errorf("invalid start date format")
+// 	}
+
+// 	endDate, err := time.Parse("2006-01-02", req.EndDate)
+// 	if err != nil {
+// 		return time.Time{}, time.Time{}, fmt.Errorf("invalid end date format")
+// 	}
+
+// 	if endDate.Before(startDate) {
+// 		return time.Time{}, time.Time{}, fmt.Errorf("end date must be after or equal to start date")
+// 	}
+
+// 	if req.Credits <= 0 {
+// 		return time.Time{}, time.Time{}, fmt.Errorf("credits must be greater than 0")
+// 	}
+
+// 	switch req.Mode {
+// 	case "online", "offline", "hybrid":
+// 	default:
+// 		return time.Time{}, time.Time{}, fmt.Errorf("invalid internship mode")
+// 	}
+
+// 	if req.MonthlyStipend < 0 {
+// 		return time.Time{}, time.Time{}, fmt.Errorf("monthly stipend cannot be negative")
+// 	}
+
+// 	return startDate, endDate, nil
+// }
+
 func (s *InternshipService) validateAndPrepareInternship(
 	req *models.CreateInternshipRequest,
 ) (time.Time, time.Time, error) {
@@ -308,12 +456,33 @@ func (s *InternshipService) validateAndPrepareInternship(
 		return time.Time{}, time.Time{}, fmt.Errorf("student with PRN %s not found", req.PRN)
 	}
 
-	startDate, err := time.Parse("2006-01-02", req.StartDate)
+	parseFlexibleDate := func(input string) (time.Time, error) {
+		input = strings.TrimSpace(input)
+
+		formats := []string{
+			"2006-01-02",
+			"02-01-2006",
+			"02/01/2006",
+			"2006/01/02",
+			"2-1-2006",
+			"2/1/2006",
+		}
+
+		for _, f := range formats {
+			if t, err := time.Parse(f, input); err == nil {
+				return t, nil
+			}
+		}
+
+		return time.Time{}, fmt.Errorf("invalid date format")
+	}
+
+	startDate, err := parseFlexibleDate(req.StartDate)
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("invalid start date format")
 	}
 
-	endDate, err := time.Parse("2006-01-02", req.EndDate)
+	endDate, err := parseFlexibleDate(req.EndDate)
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("invalid end date format")
 	}
@@ -326,11 +495,13 @@ func (s *InternshipService) validateAndPrepareInternship(
 		return time.Time{}, time.Time{}, fmt.Errorf("credits must be greater than 0")
 	}
 
-	switch req.Mode {
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	switch mode {
 	case "online", "offline", "hybrid":
 	default:
 		return time.Time{}, time.Time{}, fmt.Errorf("invalid internship mode")
 	}
+	req.Mode = mode
 
 	if req.MonthlyStipend < 0 {
 		return time.Time{}, time.Time{}, fmt.Errorf("monthly stipend cannot be negative")
