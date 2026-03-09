@@ -12,12 +12,8 @@ type LoginRequest struct {
 type LoginResponse struct {
     Token        string   `json:"token"` // backward compatible alias of accessToken
     AccessToken  string   `json:"accessToken"`
-    RefreshToken string   `json:"refreshToken"`
+    RefreshToken string   `json:"refreshToken,omitempty"`
     User         UserInfo `json:"user"`
-}
-
-type RefreshTokenRequest struct {
-    RefreshToken string `json:"refreshToken" binding:"required"`
 }
 
 // UserInfo represents user information returned in responses

@@ -1,14 +1,18 @@
 package service
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jmoiron/sqlx"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/yourusername/student-internship-manager/internal/models"
@@ -22,6 +26,7 @@ type AuthService struct {
 }
 
 var ErrInvalidCredentials = errors.New("invalid credentials")
+var ErrInvalidRefreshToken = errors.New("invalid refresh token")
 
 func NewAuthService(db *sqlx.DB, jwtSecret string, accessTokenTTL, refreshTokenTTL time.Duration) *AuthService {
 	return &AuthService{
@@ -52,13 +57,16 @@ func (s *AuthService) Login(username, password string) (*models.LoginResponse, e
 	}
 
 	// Generate JWT token
-	accessToken, err := s.generateJWT(user.ID, user.Role, "access", s.accessTokenTTL)
+	accessToken, _, err := s.generateJWT(user.ID, user.Role, "access", s.accessTokenTTL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}
-	refreshToken, err := s.generateJWT(user.ID, user.Role, "refresh", s.refreshTokenTTL)
+	refreshToken, refreshExpiry, err := s.generateJWT(user.ID, user.Role, "refresh", s.refreshTokenTTL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
+	}
+	if err := s.storeRefreshToken(user.ID, refreshToken, refreshExpiry); err != nil {
+		return nil, fmt.Errorf("failed to persist refresh token: %w", err)
 	}
 
 	// Prepare response
@@ -78,22 +86,24 @@ func (s *AuthService) Login(username, password string) (*models.LoginResponse, e
 }
 
 // generateJWT creates a JWT token with user ID stored as string claim
-func (s *AuthService) generateJWT(userID int, role, tokenType string, ttl time.Duration) (string, error) {
+func (s *AuthService) generateJWT(userID int, role, tokenType string, ttl time.Duration) (string, time.Time, error) {
+	expiry := time.Now().Add(ttl)
 	claims := jwt.MapClaims{
 		"id":   strconv.Itoa(userID),
 		"role": role,
 		"type": tokenType,
-		"exp":  time.Now().Add(ttl).Unix(),
+		"jti":  uuid.NewString(),
+		"exp":  expiry.Unix(),
 		"iat":  time.Now().Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString(s.jwtSecret)
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 
-	return tokenString, nil
+	return tokenString, expiry, nil
 }
 
 // ValidateToken validates JWT and returns user ID as int
@@ -154,25 +164,35 @@ func (s *AuthService) ValidateToken(tokenString string) (int, string, error) {
 func (s *AuthService) RefreshTokens(refreshToken string) (*models.LoginResponse, error) {
 	userID, role, err := s.validateTokenByType(refreshToken, "refresh")
 	if err != nil {
-		return nil, err
+		return nil, ErrInvalidRefreshToken
+	}
+	active, err := s.isRefreshTokenActive(userID, refreshToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate refresh token state: %w", err)
+	}
+	if !active {
+		return nil, ErrInvalidRefreshToken
 	}
 
 	var user models.User
 	query := `SELECT id, username, role, name FROM users WHERE id = $1`
 	if err := s.db.Get(&user, query, userID); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, ErrInvalidCredentials
+			return nil, ErrInvalidRefreshToken
 		}
 		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	accessToken, err := s.generateJWT(user.ID, role, "access", s.accessTokenTTL)
+	accessToken, _, err := s.generateJWT(user.ID, role, "access", s.accessTokenTTL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
-	newRefreshToken, err := s.generateJWT(user.ID, role, "refresh", s.refreshTokenTTL)
+	newRefreshToken, newRefreshExpiry, err := s.generateJWT(user.ID, role, "refresh", s.refreshTokenTTL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
+	}
+	if err := s.rotateRefreshToken(userID, refreshToken, newRefreshToken, newRefreshExpiry); err != nil {
+		return nil, fmt.Errorf("failed to rotate refresh token: %w", err)
 	}
 
 	return &models.LoginResponse{
@@ -186,4 +206,84 @@ func (s *AuthService) RefreshTokens(refreshToken string) (*models.LoginResponse,
 			Name:     user.Name,
 		},
 	}, nil
+}
+
+func (s *AuthService) hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *AuthService) storeRefreshToken(userID int, refreshToken string, expiresAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+		VALUES ($1, $2, $3)
+	`, userID, s.hashToken(refreshToken), expiresAt)
+	return err
+}
+
+func (s *AuthService) isRefreshTokenActive(userID int, refreshToken string) (bool, error) {
+	var exists bool
+	err := s.db.Get(&exists, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM refresh_tokens
+			WHERE user_id = $1
+			  AND token_hash = $2
+			  AND revoked_at IS NULL
+			  AND expires_at > NOW()
+		)
+	`, userID, s.hashToken(refreshToken))
+	return exists, err
+}
+
+func (s *AuthService) rotateRefreshToken(userID int, oldToken, newToken string, newExpiresAt time.Time) error {
+	oldHash := s.hashToken(oldToken)
+	newHash := s.hashToken(newToken)
+
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`
+		UPDATE refresh_tokens
+		SET revoked_at = NOW(), replaced_by_hash = $3
+		WHERE user_id = $1
+		  AND token_hash = $2
+		  AND revoked_at IS NULL
+	`, userID, oldHash, newHash)
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrInvalidRefreshToken
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+		VALUES ($1, $2, $3)
+	`, userID, newHash, newExpiresAt); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *AuthService) RevokeRefreshToken(refreshToken string) error {
+	if strings.TrimSpace(refreshToken) == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`
+		UPDATE refresh_tokens
+		SET revoked_at = NOW()
+		WHERE token_hash = $1
+		  AND revoked_at IS NULL
+	`, s.hashToken(refreshToken))
+	return err
+}
+
+func (s *AuthService) RefreshTokenTTLSeconds() int {
+	return int(s.refreshTokenTTL.Seconds())
 }

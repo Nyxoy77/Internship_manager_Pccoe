@@ -70,9 +70,21 @@ CREATE TABLE internship_audit_logs (
   created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE refresh_tokens (
+  id SERIAL PRIMARY KEY,
+  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash CHAR(64) NOT NULL UNIQUE,
+  expires_at TIMESTAMP NOT NULL,
+  revoked_at TIMESTAMP,
+  replaced_by_hash CHAR(64),
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 -- Indexes for performance
 CREATE INDEX idx_internships_student_prn ON internships(student_prn);
 CREATE INDEX idx_internships_status ON internships(status);
 CREATE INDEX idx_students_year_division ON students(passing_year, division);
 CREATE INDEX idx_certificates_internship_id ON certificates(internship_id);
 CREATE INDEX idx_internship_audit_logs_internship_id ON internship_audit_logs(internship_id, created_at DESC);
+CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens(user_id);
+CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);

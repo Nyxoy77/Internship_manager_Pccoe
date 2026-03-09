@@ -75,6 +75,7 @@ func main() {
 		// Public routes
 		api.POST("/login", middleware.LoginRateLimitMiddleware(cfg.LoginRateLimit, time.Duration(cfg.LoginRateWindowSecs)*time.Second), authHandler.Login)
 		api.POST("/refresh", authHandler.Refresh)
+		api.POST("/logout", authHandler.Logout)
 
 		protected := api.Group("")
 		protected.Use(middleware.AuthMiddleware(authService))
