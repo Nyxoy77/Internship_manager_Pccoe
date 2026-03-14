@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-pdf/fpdf"
@@ -54,10 +55,10 @@ func (h *StudentHandler) ListStudents(c *gin.Context) {
 		return
 	}
 
-	division := c.Query("division")
-	prn := c.Query("prn")
-	name := c.Query("name")
-	guide := c.Query("guide")
+	division := strings.TrimSpace(c.Query("division"))
+	prn := strings.TrimSpace(c.Query("prn"))
+	name := strings.TrimSpace(c.Query("name"))
+	guide := strings.TrimSpace(c.Query("guide"))
 
 	students, err := h.studentService.ListStudents(page, pageSize, passingYear, division, prn, name, guide)
 	if err != nil {
@@ -80,11 +81,11 @@ func (h *StudentHandler) ListStudentCreditReport(c *gin.Context) {
 		page,
 		pageSize,
 		passingYear,
-		c.Query("division"),
-		c.Query("prn"),
-		c.Query("name"),
-		c.Query("guide"),
-		c.Query("creditFilter"),
+		strings.TrimSpace(c.Query("division")),
+		strings.TrimSpace(c.Query("prn")),
+		strings.TrimSpace(c.Query("name")),
+		strings.TrimSpace(c.Query("guide")),
+		strings.TrimSpace(c.Query("creditFilter")),
 	)
 	if err != nil {
 		errorResponse(c, http.StatusInternalServerError, "failed to fetch student credit report")
@@ -102,11 +103,11 @@ func (h *StudentHandler) ExportStudentCreditReportCSV(c *gin.Context) {
 
 	rows, err := h.studentService.ListStudentCreditReportForExport(
 		passingYear,
-		c.Query("division"),
-		c.Query("prn"),
-		c.Query("name"),
-		c.Query("guide"),
-		c.Query("creditFilter"),
+		strings.TrimSpace(c.Query("division")),
+		strings.TrimSpace(c.Query("prn")),
+		strings.TrimSpace(c.Query("name")),
+		strings.TrimSpace(c.Query("guide")),
+		strings.TrimSpace(c.Query("creditFilter")),
 	)
 	if err != nil {
 		errorResponse(c, http.StatusInternalServerError, "failed to export student credit report")
@@ -152,11 +153,11 @@ func (h *StudentHandler) ExportStudentCreditReportPDF(c *gin.Context) {
 
 	rows, err := h.studentService.ListStudentCreditReportForExport(
 		passingYear,
-		c.Query("division"),
-		c.Query("prn"),
-		c.Query("name"),
-		c.Query("guide"),
-		c.Query("creditFilter"),
+		strings.TrimSpace(c.Query("division")),
+		strings.TrimSpace(c.Query("prn")),
+		strings.TrimSpace(c.Query("name")),
+		strings.TrimSpace(c.Query("guide")),
+		strings.TrimSpace(c.Query("creditFilter")),
 	)
 	if err != nil {
 		errorResponse(c, http.StatusInternalServerError, "failed to export student credit report")
@@ -206,18 +207,18 @@ func parseStudentCommonQuery(c *gin.Context) (int, int, *int, error) {
 	pageSize := 10
 	var passingYear *int
 
-	if q := c.Query("page"); q != "" {
+	if q := strings.TrimSpace(c.Query("page")); q != "" {
 		if parsed, err := strconv.Atoi(q); err == nil {
 			page = parsed
 		}
 	}
-	if q := c.Query("pageSize"); q != "" {
+	if q := strings.TrimSpace(c.Query("pageSize")); q != "" {
 		if parsed, err := strconv.Atoi(q); err == nil {
 			pageSize = parsed
 		}
 	}
 
-	yearStr := c.Query("year")
+	yearStr := strings.TrimSpace(c.Query("year"))
 	if yearStr != "" {
 		year, err := strconv.Atoi(yearStr)
 		if err != nil {

@@ -638,17 +638,17 @@ func (h *InternshipHandler) ListInternships(c *gin.Context) {
 	pageSize := 10
 	var year *int
 
-	if q := c.Query("page"); q != "" {
+	if q := strings.TrimSpace(c.Query("page")); q != "" {
 		if parsed, err := strconv.Atoi(q); err == nil {
 			page = parsed
 		}
 	}
-	if q := c.Query("pageSize"); q != "" {
+	if q := strings.TrimSpace(c.Query("pageSize")); q != "" {
 		if parsed, err := strconv.Atoi(q); err == nil {
 			pageSize = parsed
 		}
 	}
-	if q := c.Query("year"); q != "" {
+	if q := strings.TrimSpace(c.Query("year")); q != "" {
 		parsed, err := strconv.Atoi(q)
 		if err != nil {
 			errorResponse(c, http.StatusBadRequest, "invalid year parameter")
@@ -660,15 +660,15 @@ func (h *InternshipHandler) ListInternships(c *gin.Context) {
 	resp, err := h.internshipService.ListInternships(
 		page,
 		pageSize,
-		c.Query("status"),
-		c.Query("workflowStatus"),
-		c.Query("organization"),
-		c.Query("guide"),
-		c.Query("prn"),
-		c.Query("dateFrom"),
-		c.Query("dateTo"),
+		strings.TrimSpace(c.Query("status")),
+		strings.TrimSpace(c.Query("workflowStatus")),
+		strings.TrimSpace(c.Query("organization")),
+		strings.TrimSpace(c.Query("guide")),
+		strings.TrimSpace(c.Query("prn")),
+		strings.TrimSpace(c.Query("dateFrom")),
+		strings.TrimSpace(c.Query("dateTo")),
 		year,
-		c.Query("division"),
+		strings.TrimSpace(c.Query("division")),
 	)
 	if err != nil {
 		errorResponse(c, http.StatusInternalServerError, "Failed to fetch internships")
@@ -863,21 +863,21 @@ func (h *InternshipHandler) GetInternshipAudit(c *gin.Context) {
 
 func parseInternshipExportFilters(c *gin.Context) (string, string, string, string, string, string, string, *int, string, error) {
 	var year *int
-	if q := c.Query("year"); q != "" {
+	if q := strings.TrimSpace(c.Query("year")); q != "" {
 		parsed, err := strconv.Atoi(q)
 		if err != nil {
 			return "", "", "", "", "", "", "", nil, "", fmt.Errorf("invalid year parameter")
 		}
 		year = &parsed
 	}
-	return c.Query("status"),
-		c.Query("workflowStatus"),
-		c.Query("organization"),
-		c.Query("guide"),
-		c.Query("prn"),
-		c.Query("dateFrom"),
-		c.Query("dateTo"),
+	return strings.TrimSpace(c.Query("status")),
+		strings.TrimSpace(c.Query("workflowStatus")),
+		strings.TrimSpace(c.Query("organization")),
+		strings.TrimSpace(c.Query("guide")),
+		strings.TrimSpace(c.Query("prn")),
+		strings.TrimSpace(c.Query("dateFrom")),
+		strings.TrimSpace(c.Query("dateTo")),
 		year,
-		c.Query("division"),
+		strings.TrimSpace(c.Query("division")),
 		nil
 }
