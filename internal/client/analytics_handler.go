@@ -3,6 +3,7 @@ package client
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -29,7 +30,7 @@ func (h *AnalyticsHandler) AvgStipend(c *gin.Context) {
 		division *string
 	)
 
-	if y := c.Query("year"); y != "" {
+	if y := strings.TrimSpace(c.Query("year")); y != "" {
 		parsed, err := strconv.Atoi(y)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid year"})
@@ -38,7 +39,7 @@ func (h *AnalyticsHandler) AvgStipend(c *gin.Context) {
 		year = &parsed
 	}
 
-	if d := c.Query("division"); d != "" {
+	if d := strings.TrimSpace(c.Query("division")); d != "" {
 		division = &d
 	}
 
@@ -62,7 +63,7 @@ func (h *AnalyticsHandler) PaidPercentage(c *gin.Context) {
 		division *string
 	)
 
-	if y := c.Query("year"); y != "" {
+	if y := strings.TrimSpace(c.Query("year")); y != "" {
 		parsed, err := strconv.Atoi(y)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid year"})
@@ -71,7 +72,7 @@ func (h *AnalyticsHandler) PaidPercentage(c *gin.Context) {
 		year = &parsed
 	}
 
-	if d := c.Query("division"); d != "" {
+	if d := strings.TrimSpace(c.Query("division")); d != "" {
 		division = &d
 	}
 	data, err := h.service.GetPaidInternshipPercentage(year, division)
@@ -94,7 +95,7 @@ func (h *AnalyticsHandler) ModeDistribution(c *gin.Context) {
 		division *string
 	)
 
-	if y := c.Query("year"); y != "" {
+	if y := strings.TrimSpace(c.Query("year")); y != "" {
 		parsed, err := strconv.Atoi(y)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid year"})
@@ -103,7 +104,7 @@ func (h *AnalyticsHandler) ModeDistribution(c *gin.Context) {
 		year = &parsed
 	}
 
-	if d := c.Query("division"); d != "" {
+	if d := strings.TrimSpace(c.Query("division")); d != "" {
 		division = &d
 	}
 	data, err := h.service.GetModeWiseDistribution(year, division)
